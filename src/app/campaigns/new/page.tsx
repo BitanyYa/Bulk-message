@@ -60,17 +60,21 @@ export default function NewCampaignPage() {
 
   // Load app config on mount
   useEffect(() => {
-    const today = new Date().toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-    });
-    setCampaignName(`Campaign - ${today}`);
+    let active = true;
 
     const fetchConfig = async () => {
       try {
+        const today = new Date().toLocaleDateString('en-US', {
+          month: 'short',
+          day: 'numeric',
+          year: 'numeric',
+        });
+        if (active) {
+          setCampaignName(`Campaign - ${today}`);
+        }
+
         const res = await fetch('/api/config');
-        if (res.ok) {
+        if (res.ok && active) {
           const data = await res.json();
           setAuthRequired(Boolean(data.authRequired));
           setProviderConfigured(Boolean(data.providerConfigured));
@@ -85,6 +89,10 @@ export default function NewCampaignPage() {
     };
 
     fetchConfig();
+
+    return () => {
+      active = false;
+    };
   }, []);
 
   const handleSaveAccessKey = (key: string) => {

@@ -82,3 +82,90 @@ export interface AccessVerifyResponse {
   currency?: string;
   defaultCountryCode?: string;
 }
+
+// ==========================================
+// Persistent Campaign & History Types
+// ==========================================
+
+export type DbCampaignStatus =
+  | 'DRAFT'
+  | 'SENDING'
+  | 'COMPLETED'
+  | 'PARTIALLY_FAILED'
+  | 'FAILED'
+  | 'INTERRUPTED';
+
+export type DbRecipientStatus =
+  | 'PENDING'
+  | 'SUBMITTED'
+  | 'DELIVERED'
+  | 'FAILED'
+  | 'TIMEOUT_UNCONFIRMED';
+
+export interface CampaignRecord {
+  id: string;
+  name: string;
+  originalFilename?: string | null;
+  messageTemplate: string;
+  status: DbCampaignStatus;
+  totalRecipients: number;
+  validRecipients: number;
+  submittedCount: number;
+  deliveredCount: number;
+  failedCount: number;
+  pendingCount: number;
+  estimatedCost?: number | null;
+  actualCost?: number | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  recipients?: CampaignRecipientRecord[];
+}
+
+export interface CampaignRecipientRecord {
+  id: string;
+  campaignId: string;
+  recipientName?: string | null;
+  phone: string;
+  maskedPhone: string;
+  status: DbRecipientStatus;
+  providerMessageId?: string | null;
+  submittedAt?: string | null;
+  deliveredAt?: string | null;
+  failureReason?: string | null;
+  retryCount: number;
+  providerStatus?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DashboardMetrics {
+  totalCampaigns: number;
+  totalRecipients: number;
+  totalSubmitted: number;
+  totalDelivered: number;
+  totalFailed: number;
+  totalPending: number;
+  recentCampaigns: CampaignRecord[];
+}
+
+export interface CreateCampaignPayload {
+  name: string;
+  originalFilename?: string;
+  messageTemplate: string;
+  estimatedCost?: number;
+  recipients: Array<{
+    name: string;
+    phone: string;
+    maskedPhone: string;
+  }>;
+}
+
+export interface CampaignListResponse {
+  campaigns: CampaignRecord[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+}

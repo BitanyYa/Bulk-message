@@ -1,0 +1,74 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum CampaignStatus {
+  DRAFT
+  SENDING
+  COMPLETED
+  PARTIALLY_FAILED
+  FAILED
+  INTERRUPTED
+}
+
+enum RecipientStatus {
+  PENDING
+  SUBMITTED
+  DELIVERED
+  FAILED
+  TIMEOUT_UNCONFIRMED
+}
+
+model Campaign {
+  id               String         @id @default(cuid())
+  name             String
+  originalFilename String?
+  messageTemplate  String         @db.Text
+  status           CampaignStatus @default(DRAFT)
+  totalRecipients  Int            @default(0)
+  validRecipients  Int            @default(0)
+  submittedCount   Int            @default(0)
+  deliveredCount   Int            @default(0)
+  failedCount      Int            @default(0)
+  pendingCount     Int            @default(0)
+  estimatedCost    Float?
+  actualCost       Float?
+  startedAt        DateTime?
+  completedAt      DateTime?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  recipients CampaignRecipient[]
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+model CampaignRecipient {
+  id                String          @id @default(cuid())
+  campaignId        String
+  campaign          Campaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  recipientName     String?
+  phone             String
+  maskedPhone       String
+  status            RecipientStatus @default(PENDING)
+  providerMessageId String?
+  submittedAt       DateTime?
+  deliveredAt       DateTime?
+  failureReason     String?         @db.Text
+  retryCount        Int             @default(0)
+  providerStatus    String?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  @@index([campaignId])
+  @@index([providerMessageId])
+  @@index([status])
+  @@index([createdAt])
+}

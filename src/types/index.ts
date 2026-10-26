@@ -148,6 +148,7 @@ export interface DashboardMetrics {
   totalFailed: number;
   totalPending: number;
   recentCampaigns: CampaignRecord[];
+  warning?: string;
 }
 
 export interface CreateCampaignPayload {

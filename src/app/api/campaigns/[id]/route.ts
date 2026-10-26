@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateRequestAccess } from '@/lib/auth';
-import { prisma, isDatabaseConfigured } from '@/lib/prisma';
+import { prisma, isDatabaseConfigured, formatPrismaErrorMessage } from '@/lib/prisma';
 
 export async function GET(
   req: NextRequest,
@@ -55,9 +55,9 @@ export async function GET(
       })),
     });
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : 'Database error';
+    const cleanMsg = formatPrismaErrorMessage(err);
     return NextResponse.json(
-      { error: `Failed to load campaign: ${msg}` },
+      { error: cleanMsg },
       { status: 500 }
     );
   }

@@ -63,7 +63,11 @@ export default function DashboardPage() {
         if (metricsRes.ok && active) {
           const data: DashboardMetrics = await metricsRes.json();
           setMetrics(data);
-          setError(null);
+          if (data.warning) {
+            setError(data.warning);
+          } else {
+            setError(null);
+          }
         } else if (metricsRes.status === 401 && active) {
           setError('Access authorization required to view dashboard metrics.');
           setIsAccessModalOpen(true);

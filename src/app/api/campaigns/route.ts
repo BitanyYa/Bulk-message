@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateRequestAccess } from '@/lib/auth';
-import { prisma, isDatabaseConfigured } from '@/lib/prisma';
+import { prisma, isDatabaseConfigured, formatPrismaErrorMessage } from '@/lib/prisma';
 import { CreateCampaignPayload, CampaignListResponse } from '@/types';
 import { MAX_RECIPIENTS_PER_CAMPAIGN } from '@/lib/parser';
 import { CampaignStatus, Prisma } from '@prisma/client';
@@ -86,9 +86,9 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json(response);
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : 'Failed to fetch campaigns';
+    const cleanMsg = formatPrismaErrorMessage(err);
     return NextResponse.json(
-      { error: `Database error: ${msg}` },
+      { error: cleanMsg },
       { status: 500 }
     );
   }
@@ -198,9 +198,9 @@ export async function POST(req: NextRequest) {
       { status: 201 }
     );
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : 'Failed to create campaign';
+    const cleanMsg = formatPrismaErrorMessage(err);
     return NextResponse.json(
-      { error: `Database error while creating campaign: ${msg}` },
+      { error: cleanMsg },
       { status: 500 }
     );
   }

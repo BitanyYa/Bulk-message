@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateRequestAccess } from '@/lib/auth';
-import { prisma, isDatabaseConfigured } from '@/lib/prisma';
+import { prisma, isDatabaseConfigured, formatPrismaErrorMessage } from '@/lib/prisma';
 import { DashboardMetrics } from '@/types';
 
 export async function GET(req: NextRequest) {
@@ -22,6 +22,7 @@ export async function GET(req: NextRequest) {
       totalFailed: 0,
       totalPending: 0,
       recentCampaigns: [],
+      warning: 'Database is not yet configured. Please set DATABASE_URL in .env.local.',
     };
     return NextResponse.json(emptyMetrics);
   }
@@ -68,10 +69,17 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json(metrics);
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : 'Dashboard metrics error';
-    return NextResponse.json(
-      { error: `Database error: ${msg}` },
-      { status: 500 }
-    );
+    const cleanMsg = formatPrismaErrorMessage(err);
+    const fallbackMetrics: DashboardMetrics = {
+      totalCampaigns: 0,
+      totalRecipients: 0,
+      totalSubmitted: 0,
+      totalDelivered: 0,
+      totalFailed: 0,
+      totalPending: 0,
+      recentCampaigns: [],
+      warning: cleanMsg,
+    };
+    return NextResponse.json(fallbackMetrics);
   }
 }

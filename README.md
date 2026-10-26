@@ -1,196 +1,194 @@
 # Yonas Mobile SMS Sender
 
-A lightweight, secure, and production-ready internal company application that allows authorized employees of **Yonas Mobile** to import customer contact lists, personalize messages, and reliably dispatch SMS campaigns to up to 500 unique customers per batch via the official **AfroMessage SMS API**.
+A lightweight, secure, and production-ready enterprise SMS campaign application for **Yonas Mobile**. Authorized employees can import customer contact lists, personalize messages, manage persistent campaigns, monitor delivery metrics in a real-time operations dashboard, and dispatch SMS to up to 500 unique customers per batch via the official **AfroMessage SMS API**.
+
+Backed by **PostgreSQL** with **Prisma ORM** (compatible with Supabase, Neon, or Vercel Postgres).
 
 ---
 
-## Features
+## Key Features
 
-- **Excel & CSV File Ingestion**: Upload `.xlsx` or `.csv` files using `ExcelJS`.
-- **Intelligent Header Detection**: Automatically identifies name and phone columns (`Customer Name`, `Full Name`, `Phone Number`, `Mobile`, etc.) with manual dropdown override.
-- **Leading Zero Preservation**: Accurately preserves local Ethiopian mobile numbers starting with `09...` or `07...` without numeric truncation.
-- **Phone Normalization & Masking**: Normalizes numbers into international E.164 format (`+251...`) as required by AfroMessage while masking phone numbers in UI and logs for customer privacy (`+251 91 ••• ••34`).
-- **Duplicate & Validation Filtering**: Detects duplicate recipients after safe normalization, flags invalid rows with human-readable error reasons, and allows exclusion of invalid rows without dropping valid entries.
-- **Enforced 500-Recipient Limit**: Strictly limits campaigns to 500 recipients both client-side and server-side to guarantee delivery reliability.
-- **Dynamic SMS Personalization**: Replace `{{name}}` with recipient names or send uniform messages if omitted.
-- **Segment & Encoding Estimation**:
-  - Distinguishes standard **GSM-7** (160 characters/segment, 153 concatenated) from **UCS-2 Unicode** (70 characters/segment, 67 concatenated, for Ge'ez / Amharic text or emojis).
-  - Multi-segment cost and warning indicators.
-  - Live customer previews using actual imported customer names.
-- **Client-Orchestrated Batching**: Chunks campaign dispatch into micro-batches to prevent serverless execution timeouts and provider rate limiting.
-- **Safe Partial-Failure Retries**: Allows retrying only failed or unconfirmed messages without resending messages that were already accepted by the provider.
-- **Internal Access Protection**: Protects sending endpoints via `APP_ACCESS_KEY` to prevent unauthorized public credit exhaustion.
-- **Zero Permanent Storage**: Operates entirely in memory; files and customer lists are discarded after processing without retaining permanent databases.
+- **Operations Dashboard**: Default landing page (`/`) featuring aggregate metrics (total campaigns, messages sent, delivered, failed, pending, success rate) and live AfroMessage balance.
+- **Persistent Campaign History**: Searchable, filterable campaign archive (`/campaigns`) with status filtering (`DRAFT`, `SENDING`, `COMPLETED`, `PARTIALLY_FAILED`, `FAILED`, `INTERRUPTED`), date ranges, and pagination.
+- **Campaign Creation & Dispatch**: Guided wizard (`/campaigns/new`) preserving verified file upload, duplicate detection, phone normalization, personalization previews, and client-orchestrated micro-batch sending.
+- **Deep Campaign Inspection (`/campaigns/[id]`)**: Full audit view showing template, metrics, recipient-level statuses, error reasons, delivery timestamps, and masked phone numbers (`+251 91 ••• ••34`).
+- **Safe Partial-Failure Retry**: Re-dispatches only recipients in `FAILED` or `TIMEOUT_UNCONFIRMED` state, never double-sending to accepted (`SUBMITTED` / `DELIVERED`) recipients.
+- **CSV Audit Export**: Generates downloadable campaign recipient reports directly from persistent records.
+- **Delivery Webhook Reconciler (`/api/webhooks/afromessage`)**: Handles real-time handset delivery status callbacks with optional secret validation (`AFROMESSAGE_WEBHOOK_SECRET`).
+- **Resilient Batch Orchestration**: Micro-batch dispatching (concurrency of 5 per batch) ensures zero serverless timeout issues on Vercel while persisting live state to PostgreSQL.
+- **Internal Access Protection**: Protects write and dispatch endpoints via `APP_ACCESS_KEY` validation with session persistence.
 
 ---
 
-## Prerequisites
+## Tech Stack
 
-- **Node.js**: v18.0.0 or higher (tested on Node.js v26.5.0)
-- **Package Manager**: `npm` (v9+) or `yarn` / `pnpm`
-- **AfroMessage Account**: Verified account on [AfroMessage](https://app.afromessage.com/) with an API token.
+- **Framework**: Next.js 16 (App Router, Turbopack, Partial Prerendering)
+- **Language**: TypeScript
+- **Styling**: Tailwind CSS with rich enterprise palette and responsive layouts
+- **Database & ORM**: PostgreSQL with Prisma ORM v6
+- **SMS Gateway**: AfroMessage API (Ethiopian telecom gateway)
+- **File Parsing**: ExcelJS for `.xlsx` and `.csv` files
+- **Testing**: Vitest with comprehensive mocked unit and integration suites
 
 ---
 
-## Installation
+## Database Schema (Prisma)
 
-Clone the repository and install dependencies:
+The application uses two primary relational models with referential integrity:
 
-```bash
-cd Bulk-message
-npm install
-```
+### `Campaign`
+- `id`: Unique identifier (`cuid`)
+- `name`: Human-readable campaign title
+- `messageTemplate`: Text template containing optional `{{name}}`
+- `status`: `DRAFT` | `SENDING` | `COMPLETED` | `PARTIALLY_FAILED` | `FAILED` | `INTERRUPTED`
+- `totalRecipients`, `submittedCount`, `deliveredCount`, `failedCount`, `pendingCount`: Aggregated counters
+- `createdAt`, `updatedAt`, `completedAt`: Audit timestamps
+
+### `CampaignRecipient`
+- `id`: Unique identifier (`cuid`)
+- `campaignId`: Foreign key to `Campaign` (with `onDelete: Cascade`)
+- `recipientName`: Customer name (optional)
+- `phone`: Raw / Normalized phone number
+- `maskedPhone`: Masked phone for UI & logs (`+251 91 ••• ••34`)
+- `personalizedText`: Rendered personalized SMS message
+- `status`: `PENDING` | `SUBMITTED` | `DELIVERED` | `FAILED` | `TIMEOUT_UNCONFIRMED`
+- `providerMessageId`: AfroMessage callback correlation ID (indexed)
+- `errorMessage`: Error description if failed
+- `retryCount`: Count of re-send attempts
+- `submittedAt`, `deliveredAt`: Delivery timestamps
 
 ---
 
 ## Environment Configuration
 
-Copy the example environment configuration:
-
-```bash
-cp .env.example .env.local
-```
-
-Configure the following variables in `.env.local`:
+Configure `.env.local` based on `.env.example`:
 
 | Variable | Required | Default | Description |
 | :--- | :--- | :--- | :--- |
+| `DATABASE_URL` | **Yes** | — | PostgreSQL connection string (pooled / transaction mode) |
+| `DIRECT_URL` | Optional | — | Direct PostgreSQL connection string for migrations (e.g. Supabase port 5432) |
 | `AFROMESSAGE_API_KEY` | **Yes** | — | Bearer API token from the AfroMessage developer dashboard |
-| `AFROMESSAGE_SENDER_NAME` | Optional | `YonasMobile` | Your registered, approved AfroMessage Sender ID |
-| `AFROMESSAGE_IDENTIFIER_ID` | Optional | — | System identifier ID if subscribed to multiple short codes |
-| `AFROMESSAGE_CALLBACK_URL` | Optional | — | Public webhook URL for delivery status updates |
-| `APP_ACCESS_KEY` | Optional | — | Internal secret password required to send SMS from the UI |
+| `AFROMESSAGE_SENDER_NAME` | Optional | `YonasMobile` | Approved AfroMessage Sender ID |
+| `AFROMESSAGE_IDENTIFIER_ID` | Optional | — | System identifier ID for short code routing |
+| `AFROMESSAGE_CALLBACK_URL` | Optional | — | Public URL where AfroMessage posts delivery callbacks |
+| `AFROMESSAGE_WEBHOOK_SECRET`| Optional | — | Shared secret token verified on delivery webhooks |
+| `APP_ACCESS_KEY` | Optional | — | Internal passphrase required to send SMS from the UI |
 | `SMS_COST_PER_SEGMENT` | Optional | `0.35` | Tariff estimate in ETB per SMS segment |
 | `SMS_CURRENCY` | Optional | `ETB` | Currency code for cost display |
 | `DEFAULT_COUNTRY_CODE` | Optional | `+251` | Country calling code applied to local phone numbers |
 
 ---
 
-## AfroMessage Setup
+## Database Setup & Migrations
 
-1. **Create and verify an account** on [AfroMessage](https://app.afromessage.com/).
-2. Navigate to **API & Developers** to generate an API authorization token.
-3. Add the token to `AFROMESSAGE_API_KEY` in `.env.local`.
-4. Ensure your **Sender Name** (e.g., `YonasMobile`) is registered and approved by telecom operators (Ethio Telecom / Safaricom). Unapproved sender names will default to `AfroMessage` or be rejected.
-5. Account balance and estimated messages can be verified via the AfroMessage balance endpoint (`/api/balance`), which is displayed in the application header.
+### Local PostgreSQL Setup
+If running PostgreSQL locally with Docker:
+```bash
+docker run --name yonas-postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=yonas_sms -p 5432:5432 -d postgres:16
+```
+Set in `.env.local`:
+```env
+DATABASE_URL="postgresql://postgres:postgres@localhost:5432/yonas_sms?schema=public"
+```
 
----
+Apply migrations and generate Prisma Client:
+```bash
+npx prisma migrate dev --name init
+npx prisma generate
+```
 
-## Internal Access Protection
-
-To prevent unauthorized public visitors from triggering SMS campaigns and exhausting company credits:
-
-1. Define an internal secret in `APP_ACCESS_KEY` (e.g. `APP_ACCESS_KEY=yonas-secret-key-2026`).
-2. When configured, the sending endpoint `POST /api/send-batch` verifies the `x-app-access-key` header.
-3. In the web interface, employees click the **"Company Access Key"** button in the header and enter the key once per session.
+### Supabase / Vercel Postgres Setup
+1. Create a PostgreSQL project on [Supabase](https://supabase.com/) or [Vercel Postgres](https://vercel.com/docs/storage/vercel-postgres).
+2. Copy the Connection Pooling URL (Session / Transaction pooler, port `6543`) to `DATABASE_URL`.
+3. Copy the Direct Connection URL (port `5432`) to `DIRECT_URL`.
+4. Deploy migrations:
+```bash
+npx prisma migrate deploy
+npx prisma generate
+```
 
 ---
 
 ## Local Development
 
-Start the Next.js development server:
-
 ```bash
+# 1. Install dependencies
+npm install
+
+# 2. Generate Prisma Client
+npx prisma generate
+
+# 3. Start development server
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) in your browser.
+Open [http://localhost:3000](http://localhost:3000) in your browser:
+- **`/`**: Campaign Dashboard with metrics and recent campaign table
+- **`/campaigns`**: Full campaign history with search and filtering
+- **`/campaigns/new`**: Create and dispatch a new SMS campaign
+- **`/campaigns/[id]`**: Campaign details, recipient audit log, and retry controls
 
 ---
 
 ## Automated Testing
 
-Automated test suites are built with Vitest. **Automated tests use mocked provider responses and NEVER send real SMS messages.**
-
-To run the full test suite:
+Automated test suites use Vitest with mocked provider responses and zero side effects:
 
 ```bash
+# Run all tests
 npm run test
-```
 
-To run tests in watch mode:
-
-```bash
+# Run tests in watch mode
 npm run test:watch
 ```
 
 ### Test Coverage Highlights
-
+- **Campaign State & Resilience (`tests/campaigns.test.ts`)**:
+  - Campaign creation and recipient aggregation
+  - Interrupted campaign status detection
+  - Safe retry candidate filtering (only `FAILED` / `TIMEOUT_UNCONFIRMED`)
+  - Webhook delivery callback parser and status mapping
+  - CSV report formatting and RFC 4180 escaping
+  - Protected API routes access key verification
 - **File Parsing (`tests/parser.test.ts`)**:
-  - Excel (`.xlsx`) and CSV (`.csv`) reading via ExcelJS
-  - Preservation of phone numbers with leading zeros (`0911223344`, `0712345678`)
-  - Automatic column detection (`Name`, `Customer Name`, `Phone`, `Mobile Number`)
-  - Blank row and whitespace filtering
-  - Missing name, invalid phone, and duplicate detection
-  - Enforcement of the 500-recipient campaign cap
-  - Manual column mapping overrides
+  - Excel (`.xlsx`) & CSV (`.csv`) reading via ExcelJS
+  - Leading zero preservation (`09...`, `07...`)
+  - Column auto-detection & manual mapping
+  - Validation filtering & 500-recipient limit enforcement
 - **SMS Personalization & Encoding (`tests/sms.test.ts`)**:
-  - `{{name}}` placeholder replacement (case-insensitive)
-  - Messages without placeholders
-  - Unresolved placeholder detection (e.g., `{{amount}}`)
-  - GSM-7 7-bit character encoding (160 single, 153 concatenated)
-  - GSM-7 extended characters (`€`, `[`, `]`, `|`)
-  - UCS-2 Unicode detection (Ge'ez/Amharic `ሰላም`, emojis, 70 single, 67 concatenated)
-  - Multi-segment campaign segment estimation
+  - `{{name}}` placeholder interpolation
+  - GSM-7 7-bit vs UCS-2 Unicode (Ge'ez/Amharic) segment calculation
 - **AfroMessage Client (`tests/afromessage.test.ts`)**:
-  - Successful single SMS submission
-  - Authentication failure (HTTP 401/403)
-  - Provider rate limiting (HTTP 429)
-  - Provider validation errors (`acknowledge: "error"`)
-  - Ambiguous timeouts without assuming confirmed failure
-  - Account balance retrieval
+  - Token authentication, rate limiting (HTTP 429), and balance fetching
 - **Access Control & Safe Retry (`tests/auth_and_retry.test.ts`)**:
-  - Unauthorized request blocking
-  - Matching access key authorization
-  - Safe retry candidate selector (only retrying failed/timed out items, skipping submitted items)
+  - Header authorization checks and retry selection logic
 
 ---
 
-## Production Build & Deployment
-
-Build the optimized production bundle:
+## Production Build
 
 ```bash
+# Typecheck, lint, and build Next.js optimized bundle
+npm run lint
 npm run build
 ```
 
-Run the production server:
+---
 
-```bash
-npm run start
-```
+## Delivery Webhook Setup (AfroMessage)
 
-### Production Checklist
-
-1. Set `NODE_ENV=production`.
-2. Configure `AFROMESSAGE_API_KEY` and `APP_ACCESS_KEY` in your production environment variables.
-3. Ensure the server has outbound HTTPS internet access to `https://api.afromessage.com`.
-4. Deploy to any Node.js hosting platform (Vercel, AWS ECS/Amplify, Railway, Render, or a VPS with PM2).
+To enable handset delivery confirmation:
+1. Register your callback endpoint in the AfroMessage Developer Console:
+   ```
+   https://<your-domain.com>/api/webhooks/afromessage?secret=<YOUR_SECRET>
+   ```
+2. Set `AFROMESSAGE_WEBHOOK_SECRET` in your environment.
+3. When AfroMessage receives handset carrier acknowledgments, it posts updates to this endpoint. The reconciler updates the recipient status to `DELIVERED` or `FAILED` and synchronizes the parent campaign counters in real time.
 
 ---
 
-## Safe Manual Verification Procedure
+## Security Best Practices
 
-Before running large customer campaigns:
-
-1. Download the sample CSV template using the button in the application.
-2. Replace the sample numbers with **1 or 2 authorized internal staff phone numbers**.
-3. Upload the file and verify:
-   - Columns are detected as `Customer Name` and `Phone Number`.
-   - Phone numbers show correct masking (`+251 91 ••• ••34`).
-   - The message preview shows the recipient's actual name.
-4. Review the confirmation dialog showing recipient count and segment estimate.
-5. Click **"Confirm & Send Now"**.
-6. Verify that the test phone receives the SMS and the application results table updates to **"Submitted"** with a valid AfroMessage message ID.
-
----
-
-## Known Limitations & Provider Considerations
-
-1. **Carrier Delivery Status**:
-   - AfroMessage immediately returns `status: "Send in progress..."` with a unique `message_id` upon acceptance.
-   - Per provider documentation, handset delivery confirmation requires configuring a public callback webhook URL with AfroMessage (`AFROMESSAGE_CALLBACK_URL`). The UI clearly differentiates between provider acceptance ("Submitted") and final handset delivery.
-2. **Sender Name Approval**:
-   - Custom sender IDs like `YonasMobile` require verification and telecom regulatory approval. In development or trial accounts, messages are sent under the default sender `AfroMessage`.
-3. **Campaign Limit**:
-   - Each campaign is capped at 500 unique valid recipients. Larger recipient lists must be dispatched in separate batches.
+1. **Phone Number Privacy**: Phone numbers are masked in all UI views, logs, and exports (`+251 91 ••• ••34`).
+2. **Access Protection**: Configure `APP_ACCESS_KEY` to block unauthorized public access to sending routes.
+3. **Server-Side Credentials**: `AFROMESSAGE_API_KEY` and database credentials are strictly server-side and never exposed to the client.

@@ -28,28 +28,29 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const [
-      totalCampaigns,
-      totalRecipients,
-      totalSubmitted,
-      totalDelivered,
-      totalFailed,
-      totalPending,
-      recentCampaigns,
-    ] = await Promise.all([
-      prisma.campaign.count(),
-      prisma.campaignRecipient.count(),
-      prisma.campaignRecipient.count({ where: { status: 'SUBMITTED' } }),
-      prisma.campaignRecipient.count({ where: { status: 'DELIVERED' } }),
-      prisma.campaignRecipient.count({ where: { status: 'FAILED' } }),
-      prisma.campaignRecipient.count({
-        where: { status: { in: ['PENDING', 'TIMEOUT_UNCONFIRMED'] } },
-      }),
-      prisma.campaign.findMany({
-        take: 5,
-        orderBy: { createdAt: 'desc' },
-      }),
-    ]);
+    const totalCampaigns = await prisma.campaign.count();
+    const recipientGroups = await prisma.campaignRecipient.groupBy({
+      by: ['status'],
+      _count: true,
+    });
+    const recentCampaigns = await prisma.campaign.findMany({
+      take: 5,
+      orderBy: { createdAt: 'desc' },
+    });
+
+    let totalRecipients = 0;
+    let totalSubmitted = 0;
+    let totalDelivered = 0;
+    let totalFailed = 0;
+    let totalPending = 0;
+
+    for (const g of recipientGroups) {
+      totalRecipients += g._count;
+      if (g.status === 'SUBMITTED') totalSubmitted += g._count;
+      else if (g.status === 'DELIVERED') totalDelivered += g._count;
+      else if (g.status === 'FAILED') totalFailed += g._count;
+      else if (g.status === 'PENDING' || g.status === 'TIMEOUT_UNCONFIRMED') totalPending += g._count;
+    }
 
     const metrics: DashboardMetrics = {
       totalCampaigns,

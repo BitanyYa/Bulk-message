@@ -154,34 +154,30 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const campaign = await prisma.$transaction(async (tx) => {
-      const createdCampaign = await tx.campaign.create({
-        data: {
-          name: name.trim(),
-          originalFilename: originalFilename || null,
-          messageTemplate,
-          status: 'DRAFT',
-          totalRecipients: recipients.length,
-          validRecipients: recipients.length,
-          pendingCount: recipients.length,
-          submittedCount: 0,
-          deliveredCount: 0,
-          failedCount: 0,
-          estimatedCost: estimatedCost ?? null,
+    const campaign = await prisma.campaign.create({
+      data: {
+        name: name.trim(),
+        originalFilename: originalFilename || null,
+        messageTemplate,
+        status: 'DRAFT',
+        totalRecipients: recipients.length,
+        validRecipients: recipients.length,
+        pendingCount: recipients.length,
+        submittedCount: 0,
+        deliveredCount: 0,
+        failedCount: 0,
+        estimatedCost: estimatedCost ?? null,
+        recipients: {
+          createMany: {
+            data: recipients.map((r) => ({
+              recipientName: r.name ? r.name.trim() : null,
+              phone: r.phone.trim(),
+              maskedPhone: r.maskedPhone || r.phone.trim(),
+              status: 'PENDING',
+            })),
+          },
         },
-      });
-
-      await tx.campaignRecipient.createMany({
-        data: recipients.map((r) => ({
-          campaignId: createdCampaign.id,
-          recipientName: r.name ? r.name.trim() : null,
-          phone: r.phone.trim(),
-          maskedPhone: r.maskedPhone || r.phone.trim(),
-          status: 'PENDING',
-        })),
-      });
-
-      return createdCampaign;
+      },
     });
 
     return NextResponse.json(

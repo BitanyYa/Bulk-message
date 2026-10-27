@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateRequestAccess } from '@/lib/auth';
-import { prisma, isDatabaseConfigured } from '@/lib/prisma';
+import { prisma, isDatabaseConfigured, formatPrismaErrorMessage } from '@/lib/prisma';
 
 export async function POST(
   req: NextRequest,
@@ -51,52 +51,50 @@ export async function POST(
     }
 
     // Reset their status to PENDING and increment retryCount
-    await prisma.$transaction(async (tx) => {
-      await tx.campaignRecipient.updateMany({
-        where: {
-          campaignId,
-          status: { in: ['FAILED', 'TIMEOUT_UNCONFIRMED'] },
-        },
-        data: {
-          status: 'PENDING',
-          retryCount: { increment: 1 },
-          failureReason: null,
-          providerStatus: 'Queued for retry',
-        },
-      });
+    await prisma.campaignRecipient.updateMany({
+      where: {
+        campaignId,
+        status: { in: ['FAILED', 'TIMEOUT_UNCONFIRMED'] },
+      },
+      data: {
+        status: 'PENDING',
+        retryCount: { increment: 1 },
+        failureReason: null,
+        providerStatus: 'Queued for retry',
+      },
+    });
 
-      // Recalculate campaign counts
-      const counts = await tx.campaignRecipient.groupBy({
-        by: ['status'],
-        where: { campaignId },
-        _count: { id: true },
-      });
+    // Recalculate campaign counts
+    const counts = await prisma.campaignRecipient.groupBy({
+      by: ['status'],
+      where: { campaignId },
+      _count: { id: true },
+    });
 
-      let submittedCount = 0;
-      let deliveredCount = 0;
-      let failedCount = 0;
-      let pendingCount = 0;
+    let submittedCount = 0;
+    let deliveredCount = 0;
+    let failedCount = 0;
+    let pendingCount = 0;
 
-      for (const group of counts) {
-        if (group.status === 'SUBMITTED') submittedCount = group._count.id;
-        if (group.status === 'DELIVERED') deliveredCount = group._count.id;
-        if (group.status === 'FAILED') failedCount = group._count.id;
-        if (group.status === 'PENDING' || group.status === 'TIMEOUT_UNCONFIRMED') {
-          pendingCount += group._count.id;
-        }
+    for (const group of counts) {
+      if (group.status === 'SUBMITTED') submittedCount = group._count.id;
+      if (group.status === 'DELIVERED') deliveredCount = group._count.id;
+      if (group.status === 'FAILED') failedCount = group._count.id;
+      if (group.status === 'PENDING' || group.status === 'TIMEOUT_UNCONFIRMED') {
+        pendingCount += group._count.id;
       }
+    }
 
-      await tx.campaign.update({
-        where: { id: campaignId },
-        data: {
-          status: 'SENDING',
-          completedAt: null,
-          submittedCount,
-          deliveredCount,
-          failedCount,
-          pendingCount,
-        },
-      });
+    await prisma.campaign.update({
+      where: { id: campaignId },
+      data: {
+        status: 'SENDING',
+        completedAt: null,
+        submittedCount,
+        deliveredCount,
+        failedCount,
+        pendingCount,
+      },
     });
 
     return NextResponse.json({
@@ -105,9 +103,9 @@ export async function POST(
       retriedCount: failedRecipients.length,
     });
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : 'Retry failed';
+    const cleanMsg = formatPrismaErrorMessage(err);
     return NextResponse.json(
-      { error: `Database error during retry: ${msg}` },
+      { error: cleanMsg },
       { status: 500 }
     );
   }

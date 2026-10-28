@@ -1,30 +1,66 @@
 'use client';
 
-import React, { useMemo } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
+import Link from 'next/link';
 import {
   AlertTriangle,
   Sparkles,
   Info,
   UserCheck,
+  FileText,
+  ExternalLink,
 } from 'lucide-react';
 import {
   analyzeSmsMessage,
   findUnresolvedPlaceholders,
   estimateCampaignSegments,
 } from '@/lib/sms';
-import { RecipientRecord } from '@/types';
+import { RecipientRecord, MessageTemplateRecord } from '@/types';
 
 interface SmsComposerProps {
   message: string;
   onChangeMessage: (msg: string) => void;
   selectedRecipients: RecipientRecord[];
+  initialTemplates?: MessageTemplateRecord[];
 }
 
 export function SmsComposer({
   message,
   onChangeMessage,
   selectedRecipients,
+  initialTemplates,
 }: SmsComposerProps) {
+  const [templates, setTemplates] = useState<MessageTemplateRecord[]>(initialTemplates || []);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
+
+  useEffect(() => {
+    let active = true;
+    async function loadActiveTemplates() {
+      try {
+        const accessKey = typeof window !== 'undefined' ? sessionStorage.getItem('yonas_sms_access_key') : null;
+        const headers: Record<string, string> = {};
+        if (accessKey) {
+          headers['x-app-access-key'] = accessKey;
+        }
+        const res = await fetch('/api/templates?status=active&pageSize=50', { headers });
+        if (res.ok && active) {
+          const data = await res.json();
+          setTemplates(data.templates || []);
+        }
+      } catch {
+        // quiet fallback
+      }
+    }
+
+    if (!initialTemplates || initialTemplates.length === 0) {
+      loadActiveTemplates();
+    }
+
+    return () => {
+      active = false;
+    };
+  }, [initialTemplates]);
+
   const analysis = useMemo(() => {
     return analyzeSmsMessage(message);
   }, [message]);
@@ -48,6 +84,16 @@ export function SmsComposer({
 
   const applyDefaultTemplate = () => {
     onChangeMessage('Hello {{name}}, thank you for choosing Yonas Mobile! We appreciate your trust in us.');
+    setSelectedTemplateId('');
+  };
+
+  const handleSelectTemplate = (templateId: string) => {
+    setSelectedTemplateId(templateId);
+    if (!templateId) return;
+    const found = templates.find((t) => t.id === templateId);
+    if (found) {
+      onChangeMessage(found.body);
+    }
   };
 
   return (
@@ -65,8 +111,26 @@ export function SmsComposer({
           </p>
         </div>
 
-        {/* Quick insertion toolbar */}
-        <div className="flex items-center gap-2">
+        {/* Quick insertion & template toolbar */}
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Template dropdown */}
+          {templates.length > 0 && (
+            <div className="relative">
+              <select
+                value={selectedTemplateId}
+                onChange={(e) => handleSelectTemplate(e.target.value)}
+                className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 shadow-2xs focus:border-blue-600 focus:outline-hidden"
+              >
+                <option value="">Select Saved Template...</option>
+                {templates.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
           <button
             type="button"
             onClick={insertPlaceholder}
@@ -75,13 +139,24 @@ export function SmsComposer({
             <Sparkles className="h-3 w-3 text-blue-600" />
             + Insert {'{{name}}'}
           </button>
+
           <button
             type="button"
             onClick={applyDefaultTemplate}
             className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100 transition-colors"
           >
-            Load Sample Template
+            Sample
           </button>
+
+          <Link
+            href="/templates"
+            className="inline-flex items-center gap-1 text-xs font-medium text-blue-700 hover:text-blue-900 ml-1"
+            title="Open Templates manager"
+          >
+            <FileText className="h-3.5 w-3.5" />
+            <span>Templates</span>
+            <ExternalLink className="h-2.5 w-2.5" />
+          </Link>
         </div>
       </div>
 
@@ -90,7 +165,10 @@ export function SmsComposer({
         <textarea
           rows={4}
           value={message}
-          onChange={(e) => onChangeMessage(e.target.value)}
+          onChange={(e) => {
+            onChangeMessage(e.target.value);
+            setSelectedTemplateId('');
+          }}
           placeholder="Hello {{name}}, thank you for choosing Yonas Mobile! We appreciate your trust in us."
           className="w-full rounded-lg border border-slate-300 p-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:outline-hidden focus:ring-1 focus:ring-blue-600 transition-all font-sans"
         />
@@ -123,80 +201,67 @@ export function SmsComposer({
                 analysis.segmentCount > 1 ? 'text-amber-700 font-bold' : 'text-slate-900'
               }`}
             >
-              {analysis.segmentCount} {analysis.segmentCount === 1 ? 'segment' : 'segments'}
+              {analysis.segmentCount} {analysis.segmentCount === 1 ? 'SMS Segment' : 'SMS Segments'}
             </span>
           </div>
 
-          <div>
-            Remaining in segment:{' '}
-            <span className="font-semibold text-slate-900">
-              {analysis.charsRemainingInSegment}
-            </span>
+          <div className="text-slate-400">
+            ({analysis.charsRemainingInSegment} chars left in current segment)
           </div>
         </div>
 
-        <div className="text-[11px] text-slate-500">
-          {analysis.encoding === 'GSM-7'
-            ? 'GSM 7-bit (160 / 153 chars per segment)'
-            : 'UCS-2 Unicode (70 / 67 chars per segment)'}
-        </div>
+        {campaignEstimate.maxSegmentsPerMessage > 1 && (
+          <div className="text-amber-700 font-medium">
+            Long names may cause up to {campaignEstimate.maxSegmentsPerMessage} segments.
+          </div>
+        )}
       </div>
 
       {/* Unresolved Placeholders Warning */}
       {unresolvedPlaceholders.length > 0 && (
-        <div className="mt-3 rounded-md border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800 flex items-start gap-2">
+        <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800 flex items-start gap-2">
           <AlertTriangle className="h-4 w-4 shrink-0 text-rose-600 mt-0.5" />
           <div>
-            <p className="font-semibold">Unresolved Placeholders Detected</p>
-            <p className="mt-0.5">
-              The following placeholder(s) are not supported:{' '}
-              <span className="font-mono font-bold">{unresolvedPlaceholders.join(', ')}</span>.
-              Only <span className="font-mono font-bold">{'{{name}}'}</span> is supported.
-              Sending will be blocked until these are corrected.
-            </p>
+            <span className="font-semibold">Unresolved placeholder(s): </span>
+            {unresolvedPlaceholders.join(', ')}. Only <code className="font-mono bg-white px-1 py-0.5 rounded">{'{{name}}'}</code> is supported. Other tags will be sent as plain text.
           </div>
         </div>
       )}
 
-      {/* Multi-segment alert banner */}
-      {analysis.segmentCount > 1 && (
-        <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 flex items-start gap-2">
-          <Info className="h-4 w-4 shrink-0 text-amber-600 mt-0.5" />
+      {/* Unicode / Multi-segment Notice */}
+      {analysis.hasUnicode && (
+        <div className="mt-3 rounded-lg border border-purple-200 bg-purple-50 p-3 text-xs text-purple-900 flex items-start gap-2">
+          <Info className="h-4 w-4 shrink-0 text-purple-600 mt-0.5" />
           <div>
-            <p className="font-semibold">Multi-Segment Message Warning</p>
-            <p className="mt-0.5">
-              This message exceeds a single SMS segment and will be billed as{' '}
-              <span className="font-bold">{analysis.segmentCount} segments</span> per recipient by telecom carriers.
-            </p>
+            <span className="font-semibold">Unicode message detected: </span>
+            Using UCS-2 encoding. Each SMS segment is limited to 70 characters (instead of 160 GSM-7 characters).
           </div>
         </div>
       )}
 
-      {/* Live Personalized Previews */}
-      {message.length > 0 && selectedRecipients.length > 0 && (
-        <div className="mt-5 rounded-lg border border-slate-200 bg-slate-50/60 p-4">
-          <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-slate-700">
-            <UserCheck className="h-4 w-4 text-blue-600" />
-            Live Customer Previews (First {campaignEstimate.samplePersonalized.length} Selected Recipients)
+      {/* Personalized Live Preview Cards */}
+      {sampleNames.length > 0 && (
+        <div className="mt-4 pt-4 border-t border-slate-100">
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 mb-2">
+            <UserCheck className="h-4 w-4 text-blue-700" />
+            <span>Personalized Preview for Sample Customers ({sampleNames.length} shown)</span>
           </div>
 
-          <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {campaignEstimate.samplePersonalized.map((sample, idx) => (
               <div
                 key={idx}
-                className="rounded-md border border-slate-200 bg-white p-3 shadow-2xs"
+                className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs shadow-2xs"
               >
-                <div className="flex items-center justify-between text-[11px] text-slate-500 pb-1.5 border-b border-slate-100">
-                  <span className="font-medium text-slate-800">
-                    To: {sample.name || 'Customer'}
-                  </span>
-                  <span className="text-slate-400">
+                <div className="flex items-center justify-between text-slate-500 mb-1">
+                  <span className="font-bold text-slate-900">{sample.name}</span>
+                  <span className="rounded bg-white border border-slate-200 px-1.5 py-0.5 text-[10px]">
                     {sample.segments} {sample.segments === 1 ? 'segment' : 'segments'}
                   </span>
                 </div>
-                <p className="mt-2 text-xs text-slate-800 whitespace-pre-wrap leading-relaxed">
+                <div className="text-slate-800 font-mono text-[11px] bg-white rounded p-2 border border-slate-100 whitespace-pre-wrap">
                   {sample.message}
-                </p>
+                </div>
               </div>
             ))}
           </div>

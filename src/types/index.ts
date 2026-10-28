@@ -84,6 +84,30 @@ export interface AccessVerifyResponse {
 }
 
 // ==========================================
+// Message Template Types
+// ==========================================
+
+export interface MessageTemplateRecord {
+  id: string;
+  name: string;
+  body: string;
+  isArchived: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateTemplatePayload {
+  name: string;
+  body: string;
+}
+
+export interface UpdateTemplatePayload {
+  name?: string;
+  body?: string;
+  isArchived?: boolean;
+}
+
+// ==========================================
 // Persistent Campaign & History Types
 // ==========================================
 
@@ -102,11 +126,12 @@ export type DbRecipientStatus =
   | 'FAILED'
   | 'TIMEOUT_UNCONFIRMED';
 
-export interface CampaignRecord {
+export interface CampaignBatchRecord {
   id: string;
-  name: string;
-  originalFilename?: string | null;
-  messageTemplate: string;
+  campaignId: string;
+  batchNumber: number;
+  name?: string | null;
+  messageText: string;
   status: DbCampaignStatus;
   totalRecipients: number;
   validRecipients: number;
@@ -123,9 +148,35 @@ export interface CampaignRecord {
   recipients?: CampaignRecipientRecord[];
 }
 
+export interface CampaignRecord {
+  id: string;
+  name: string;
+  originalFilename?: string | null;
+  messageTemplate: string;
+  status: DbCampaignStatus;
+  isArchived?: boolean;
+  totalRecipients: number;
+  validRecipients: number;
+  submittedCount: number;
+  deliveredCount: number;
+  failedCount: number;
+  pendingCount: number;
+  estimatedCost?: number | null;
+  actualCost?: number | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  recipients?: CampaignRecipientRecord[];
+  batches?: CampaignBatchRecord[];
+  batchCount?: number;
+  lastBatchActivity?: string | null;
+}
+
 export interface CampaignRecipientRecord {
   id: string;
   campaignId: string;
+  batchId?: string | null;
   recipientName?: string | null;
   phone: string;
   maskedPhone: string;
@@ -163,6 +214,17 @@ export interface CreateCampaignPayload {
   }>;
 }
 
+export interface AddBatchPayload {
+  name?: string;
+  messageText?: string;
+  estimatedCost?: number;
+  recipients: Array<{
+    name: string;
+    phone: string;
+    maskedPhone: string;
+  }>;
+}
+
 export interface CampaignListResponse {
   campaigns: CampaignRecord[];
   total: number;
@@ -170,3 +232,4 @@ export interface CampaignListResponse {
   pageSize: number;
   totalPages: number;
 }
+

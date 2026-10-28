@@ -95,13 +95,19 @@ export function detectColumnMapping(headers: string[]): ColumnMapping | null {
   return null;
 }
 
+export interface ProcessRowsOptions {
+  existingPhones?: Set<string> | string[];
+  maxLimit?: number;
+}
+
 /**
  * Validates, normalizes, and identifies duplicates in raw table rows.
  */
 export function processRawRows(
   headers: string[],
   rows: string[][],
-  mapping: ColumnMapping | null
+  mapping: ColumnMapping | null,
+  options?: ProcessRowsOptions
 ): ParseResult {
   if (!mapping) {
     return {
@@ -136,6 +142,15 @@ export function processRawRows(
 
   const recipients: RecipientRecord[] = [];
   const seenPhones = new Set<string>();
+  const existingSet = new Set<string>();
+
+  if (options?.existingPhones) {
+    for (const p of options.existingPhones) {
+      existingSet.add(p);
+    }
+  }
+
+  const maxLimit = options?.maxLimit ?? MAX_RECIPIENTS_PER_CAMPAIGN;
 
   let validCount = 0;
   let invalidCount = 0;
@@ -192,7 +207,24 @@ export function processRawRows(
 
     const normalizedPhone = phoneValidation.normalized;
 
-    // Check duplicate
+    // Check duplicate against existing campaign recipients first
+    if (existingSet.has(normalizedPhone)) {
+      duplicateCount++;
+      recipients.push({
+        id,
+        rawName,
+        rawPhone,
+        normalizedPhone,
+        maskedPhone: maskPhoneNumber(normalizedPhone),
+        status: 'duplicate',
+        validationError: `Already registered in this campaign (${maskPhoneNumber(normalizedPhone)})`,
+        selected: false,
+        rowNumber,
+      });
+      continue;
+    }
+
+    // Check intra-file duplicate
     if (seenPhones.has(normalizedPhone)) {
       duplicateCount++;
       recipients.push({
@@ -202,15 +234,15 @@ export function processRawRows(
         normalizedPhone,
         maskedPhone: maskPhoneNumber(normalizedPhone),
         status: 'duplicate',
-        validationError: `Duplicate phone number (${maskPhoneNumber(normalizedPhone)})`,
+        validationError: `Duplicate phone number in uploaded file (${maskPhoneNumber(normalizedPhone)})`,
         selected: false,
         rowNumber,
       });
       continue;
     }
 
-    // Check Campaign Limit (500 recipients)
-    if (validCount >= MAX_RECIPIENTS_PER_CAMPAIGN) {
+    // Check Campaign/Batch Limit (500 recipients)
+    if (validCount >= maxLimit) {
       invalidCount++;
       recipients.push({
         id,
@@ -219,7 +251,7 @@ export function processRawRows(
         normalizedPhone,
         maskedPhone: maskPhoneNumber(normalizedPhone),
         status: 'invalid',
-        validationError: `Campaign limit of ${MAX_RECIPIENTS_PER_CAMPAIGN} unique recipients exceeded`,
+        validationError: `Campaign limit of ${maxLimit} unique recipients exceeded`,
         selected: false,
         rowNumber,
       });
@@ -241,7 +273,7 @@ export function processRawRows(
     });
   }
 
-  const exceedsLimit = validCount > MAX_RECIPIENTS_PER_CAMPAIGN;
+  const exceedsLimit = validCount > maxLimit;
 
   return {
     headers,
@@ -255,14 +287,33 @@ export function processRawRows(
   };
 }
 
+export interface ParseCustomerFileOptions {
+  customMapping?: ColumnMapping | null;
+  existingPhones?: Set<string> | string[];
+  maxLimit?: number;
+}
+
 /**
  * Parses an Excel (.xlsx) or CSV file buffer using ExcelJS.
  */
 export async function parseCustomerFile(
   buffer: Buffer,
   filename: string,
-  customMapping?: ColumnMapping
+  mappingOrOptions?: ColumnMapping | ParseCustomerFileOptions | null
 ): Promise<ParseResult> {
+  const customMapping =
+    mappingOrOptions && 'nameColumn' in mappingOrOptions
+      ? (mappingOrOptions as ColumnMapping)
+      : (mappingOrOptions as ParseCustomerFileOptions | undefined)?.customMapping;
+
+  const rowOptions: ProcessRowsOptions | undefined =
+    mappingOrOptions && !('nameColumn' in mappingOrOptions)
+      ? {
+          existingPhones: (mappingOrOptions as ParseCustomerFileOptions).existingPhones,
+          maxLimit: (mappingOrOptions as ParseCustomerFileOptions).maxLimit,
+        }
+      : undefined;
+
   const isCsv = filename.toLowerCase().endsWith('.csv');
   const isXlsx = filename.toLowerCase().endsWith('.xlsx');
 
@@ -378,5 +429,6 @@ export async function parseCustomerFile(
 
   const detectedMapping = customMapping || detectColumnMapping(headers);
 
-  return processRawRows(headers, rawRows, detectedMapping);
+  return processRawRows(headers, rawRows, detectedMapping, rowOptions);
 }
+

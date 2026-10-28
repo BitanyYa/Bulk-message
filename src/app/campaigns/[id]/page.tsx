@@ -4,7 +4,8 @@ import React, { useState, useEffect, use, Suspense } from 'react';
 import Link from 'next/link';
 import { Header } from '@/components/Header';
 import { AccessKeyModal } from '@/components/AccessKeyModal';
-import { CampaignRecord } from '@/types';
+import { AddCustomersModal } from '@/components/AddCustomersModal';
+import { CampaignRecord, CampaignBatchRecord } from '@/types';
 import {
   ArrowLeft,
   Calendar,
@@ -18,6 +19,11 @@ import {
   Search,
   MessageSquare,
   RefreshCw,
+  UserPlus,
+  Lock,
+  Unlock,
+  Layers,
+  FileText,
 } from 'lucide-react';
 
 function CampaignDetailsContent({
@@ -38,6 +44,7 @@ function CampaignDetailsContent({
   const [authRequired, setAuthRequired] = useState(false);
   const [providerConfigured, setProviderConfigured] = useState(true);
   const [senderName, setSenderName] = useState('YonasMobile');
+  const [tariffPerSegment, setTariffPerSegment] = useState<number | null>(0.35);
   const [currency, setCurrency] = useState('ETB');
   const [balance, setBalance] = useState<{ balance: string; estimatedMessages: string } | null>(null);
 
@@ -45,12 +52,17 @@ function CampaignDetailsContent({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Recipient table filter & search state
+  // Batches and Filter state
+  const [selectedBatchId, setSelectedBatchId] = useState<string | 'all'>('all');
   const [recipientFilter, setRecipientFilter] = useState<'all' | 'SUBMITTED' | 'DELIVERED' | 'FAILED' | 'PENDING'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [isRetrying, setIsRetrying] = useState(false);
   const [retryMessage, setRetryMessage] = useState<string | null>(null);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
+
+  // Add Customers Modal state
+  const [isAddCustomersOpen, setIsAddCustomersOpen] = useState(false);
+  const [isArchiving, setIsArchiving] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -63,6 +75,7 @@ function CampaignDetailsContent({
           setAuthRequired(Boolean(configData.authRequired));
           setProviderConfigured(Boolean(configData.providerConfigured));
           if (configData.senderName) setSenderName(configData.senderName);
+          if (configData.tariffPerSegment !== undefined) setTariffPerSegment(configData.tariffPerSegment);
           if (configData.currency) setCurrency(configData.currency);
           if (configData.balance) setBalance(configData.balance);
         }
@@ -108,8 +121,8 @@ function CampaignDetailsContent({
     sessionStorage.setItem('yonas_sms_access_key', key);
   };
 
-  // Safe retry of only failed or timed-out recipients
-  const handleRetryFailed = async () => {
+  // Safe retry of failed or timed-out recipients
+  const handleRetryFailed = async (batchId?: string) => {
     if (!campaign) return;
     setIsRetrying(true);
     setRetryMessage(null);
@@ -127,6 +140,7 @@ function CampaignDetailsContent({
       const resetRes = await fetch(`/api/campaigns/${id}/retry`, {
         method: 'POST',
         headers,
+        body: JSON.stringify(batchId ? { batchId } : {}),
       });
 
       if (!resetRes.ok) {
@@ -134,7 +148,7 @@ function CampaignDetailsContent({
         throw new Error(errData.error || 'Failed to queue retries');
       }
 
-      setRetryMessage('Failed messages reset. Now sending retries in safe batches...');
+      setRetryMessage('Failed messages reset. Now sending retries safely...');
 
       // 2. Dispatch batch sending for the pending retried recipients
       let remaining = 1;
@@ -142,7 +156,7 @@ function CampaignDetailsContent({
         const sendRes = await fetch(`/api/campaigns/${id}/send-batch`, {
           method: 'POST',
           headers,
-          body: JSON.stringify({}),
+          body: JSON.stringify(batchId ? { batchId } : {}),
         });
 
         if (!sendRes.ok) {
@@ -154,7 +168,7 @@ function CampaignDetailsContent({
         remaining = sendData.remainingPending || 0;
       }
 
-      setRetryMessage('Retry completed successfully.');
+      setRetryMessage('Retry dispatch completed successfully.');
       setRefreshTrigger((prev) => prev + 1);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Error executing retry';
@@ -164,8 +178,47 @@ function CampaignDetailsContent({
     }
   };
 
-  const handleDownloadCsv = () => {
-    const url = `/api/campaigns/${id}/export`;
+  const handleToggleArchive = async () => {
+    if (!campaign) return;
+    const willArchive = !campaign.isArchived;
+    const confirmMsg = willArchive
+      ? 'Close this campaign? When closed, no new customer batches can be added unless reopened.'
+      : 'Reopen this campaign to allow adding and sending new batches?';
+
+    if (!confirm(confirmMsg)) return;
+
+    setIsArchiving(true);
+    try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      };
+      if (accessKey) {
+        headers['x-app-access-key'] = accessKey;
+      }
+
+      const res = await fetch(`/api/campaigns/${id}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ isArchived: willArchive }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Failed to update campaign state');
+      }
+
+      setRefreshTrigger((prev) => prev + 1);
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : 'Action failed');
+    } finally {
+      setIsArchiving(false);
+    }
+  };
+
+  const handleDownloadCsv = (batchId?: string) => {
+    const url = batchId
+      ? `/api/campaigns/${id}/export?batchId=${batchId}`
+      : `/api/campaigns/${id}/export`;
     const a = document.createElement('a');
     a.href = url;
     a.download = `campaign_${id}_results.csv`;
@@ -173,8 +226,16 @@ function CampaignDetailsContent({
   };
 
   const recipients = campaign?.recipients || [];
+  const batches: CampaignBatchRecord[] = campaign?.batches || [];
 
+  // Filter recipients by selected batch and status/search
   const filteredRecipients = recipients.filter((r) => {
+    // 1. Batch filter
+    if (selectedBatchId !== 'all') {
+      if (r.batchId !== selectedBatchId) return false;
+    }
+
+    // 2. Status filter
     if (recipientFilter !== 'all') {
       if (recipientFilter === 'PENDING') {
         if (r.status !== 'PENDING' && r.status !== 'TIMEOUT_UNCONFIRMED') return false;
@@ -183,6 +244,7 @@ function CampaignDetailsContent({
       }
     }
 
+    // 3. Search query
     if (searchQuery.trim().length > 0) {
       const q = searchQuery.toLowerCase();
       return (
@@ -196,7 +258,13 @@ function CampaignDetailsContent({
     return true;
   });
 
-  const failedCount = campaign ? campaign.failedCount : 0;
+  const selectedBatch =
+    selectedBatchId !== 'all' ? batches.find((b) => b.id === selectedBatchId) : null;
+
+  // Selected scope failed count for retry button
+  const currentScopeFailedCount = selectedBatch
+    ? selectedBatch.failedCount
+    : campaign?.failedCount || 0;
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans flex flex-col">
@@ -225,6 +293,11 @@ function CampaignDetailsContent({
                 <h1 className="text-xl font-bold tracking-tight text-slate-900">
                   {campaign?.name || 'Campaign Details'}
                 </h1>
+                {campaign?.isArchived && (
+                  <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[10px] font-semibold text-slate-600 border border-slate-300">
+                    Closed
+                  </span>
+                )}
                 {campaign && (
                   <span className="text-xs px-2.5 py-0.5 rounded-full bg-slate-100 font-mono text-slate-600 border border-slate-200">
                     ID: {campaign.id}
@@ -245,36 +318,94 @@ function CampaignDetailsContent({
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            {failedCount > 0 && (
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Add Customers Action */}
+            <button
+              type="button"
+              onClick={() => setIsAddCustomersOpen(true)}
+              disabled={campaign?.isArchived || campaign?.status === 'SENDING'}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-700 px-3.5 py-1.5 text-xs font-semibold text-white shadow-xs hover:bg-blue-800 transition-colors disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed"
+              title={
+                campaign?.isArchived
+                  ? 'Campaign is closed. Reopen to add more customers.'
+                  : 'Upload an additional contact list to this campaign'
+              }
+            >
+              <UserPlus className="h-4 w-4" />
+              <span>Add Customers</span>
+            </button>
+
+            {/* Close / Reopen Toggle */}
+            {campaign && (
               <button
                 type="button"
-                onClick={handleRetryFailed}
+                onClick={handleToggleArchive}
+                disabled={isArchiving}
+                className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors shadow-2xs"
+                title={campaign.isArchived ? 'Reopen campaign' : 'Close campaign'}
+              >
+                {campaign.isArchived ? (
+                  <>
+                    <Unlock className="h-3.5 w-3.5 text-emerald-600" />
+                    <span>Reopen</span>
+                  </>
+                ) : (
+                  <>
+                    <Lock className="h-3.5 w-3.5 text-slate-500" />
+                    <span>Close</span>
+                  </>
+                )}
+              </button>
+            )}
+
+            {/* Safe Retry Button */}
+            {currentScopeFailedCount > 0 && (
+              <button
+                type="button"
+                onClick={() =>
+                  handleRetryFailed(selectedBatchId !== 'all' ? selectedBatchId : undefined)
+                }
                 disabled={isRetrying}
                 className="inline-flex items-center gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-900 hover:bg-amber-100 transition-colors shadow-2xs disabled:opacity-50"
               >
                 <RotateCcw className={`h-3.5 w-3.5 text-amber-700 ${isRetrying ? 'animate-spin' : ''}`} />
-                <span>{isRetrying ? 'Retrying Failed...' : `Retry Failed (${failedCount})`}</span>
+                <span>
+                  {isRetrying
+                    ? 'Retrying Failed...'
+                    : `Retry Failed (${currentScopeFailedCount})`}
+                </span>
               </button>
             )}
 
+            {/* Export CSV */}
             <button
               type="button"
-              onClick={handleDownloadCsv}
+              onClick={() =>
+                handleDownloadCsv(selectedBatchId !== 'all' ? selectedBatchId : undefined)
+              }
               className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors shadow-2xs"
+              title={
+                selectedBatchId !== 'all'
+                  ? 'Export results for this batch'
+                  : 'Export all results across all batches'
+              }
             >
               <Download className="h-3.5 w-3.5 text-slate-500" />
-              <span>Export CSV</span>
+              <span>
+                {selectedBatchId !== 'all'
+                  ? `Export ${selectedBatch?.name || 'Batch'} CSV`
+                  : 'Export All Batches CSV'}
+              </span>
             </button>
 
+            {/* Refresh */}
             <button
               type="button"
               onClick={() => setRefreshTrigger((prev) => prev + 1)}
-              className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors shadow-2xs"
+              className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors shadow-2xs"
               title="Refresh details"
             >
               <RefreshCw className="h-3.5 w-3.5 text-slate-500" />
-              <span>Refresh</span>
             </button>
           </div>
         </div>
@@ -284,7 +415,7 @@ function CampaignDetailsContent({
           <div className="rounded-lg border border-rose-200 bg-rose-50 p-4 text-xs text-rose-800 flex items-start gap-2.5">
             <AlertCircle className="h-4 w-4 shrink-0 text-rose-600 mt-0.5" />
             <div>
-              <p className="font-semibold text-rose-900">Error</p>
+              <p className="font-semibold text-rose-900">Notice</p>
               <p className="mt-0.5">{error}</p>
             </div>
           </div>
@@ -304,9 +435,11 @@ function CampaignDetailsContent({
         {campaign && (
           <section className="grid grid-cols-2 gap-3 sm:grid-cols-5">
             <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-2xs">
-              <span className="text-xs font-medium text-slate-500">Total Recipients</span>
+              <span className="text-xs font-medium text-slate-500">
+                {selectedBatch ? 'Batch Recipients' : 'Total Unique Recipients'}
+              </span>
               <p className="mt-1 text-2xl font-bold text-slate-900">
-                {campaign.totalRecipients}
+                {selectedBatch ? selectedBatch.totalRecipients : campaign.totalRecipients}
               </p>
             </div>
 
@@ -316,7 +449,7 @@ function CampaignDetailsContent({
                 Submitted
               </span>
               <p className="mt-1 text-2xl font-bold text-emerald-900">
-                {campaign.submittedCount}
+                {selectedBatch ? selectedBatch.submittedCount : campaign.submittedCount}
               </p>
             </div>
 
@@ -326,7 +459,7 @@ function CampaignDetailsContent({
                 Delivered
               </span>
               <p className="mt-1 text-2xl font-bold text-blue-900">
-                {campaign.deliveredCount}
+                {selectedBatch ? selectedBatch.deliveredCount : campaign.deliveredCount}
               </p>
             </div>
 
@@ -336,7 +469,7 @@ function CampaignDetailsContent({
                 Failed
               </span>
               <p className="mt-1 text-2xl font-bold text-rose-900">
-                {campaign.failedCount}
+                {selectedBatch ? selectedBatch.failedCount : campaign.failedCount}
               </p>
             </div>
 
@@ -346,30 +479,111 @@ function CampaignDetailsContent({
                 Pending / Timeout
               </span>
               <p className="mt-1 text-2xl font-bold text-slate-900">
-                {campaign.pendingCount}
+                {selectedBatch ? selectedBatch.pendingCount : campaign.pendingCount}
               </p>
             </div>
           </section>
         )}
 
-        {/* Message Template Card */}
-        {campaign && (
+        {/* Batches Section */}
+        {batches.length > 0 && (
+          <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-xs space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2">
+                <Layers className="h-4 w-4 text-blue-700" />
+                <h2 className="text-sm font-bold text-slate-900">
+                  Sending Batches ({batches.length})
+                </h2>
+              </div>
+              <p className="text-xs text-slate-500">
+                Select a batch to filter customer logs and view that batch&apos;s specific message snapshot.
+              </p>
+            </div>
+
+            {/* Batch Selector Pills */}
+            <div className="flex flex-wrap items-center gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setSelectedBatchId('all')}
+                className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
+                  selectedBatchId === 'all'
+                    ? 'bg-blue-700 text-white shadow-xs'
+                    : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                }`}
+              >
+                All Batches ({recipients.length})
+              </button>
+
+              {batches.map((b) => (
+                <button
+                  key={b.id}
+                  type="button"
+                  onClick={() => setSelectedBatchId(b.id)}
+                  className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
+                    selectedBatchId === b.id
+                      ? 'bg-blue-700 text-white shadow-xs'
+                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                  }`}
+                >
+                  <span>{b.name || `Batch ${b.batchNumber}`}</span>
+                  <span
+                    className={`rounded-full px-1.5 py-0.2 text-[10px] ${
+                      selectedBatchId === b.id
+                        ? 'bg-blue-800 text-blue-100'
+                        : 'bg-white text-slate-600'
+                    }`}
+                  >
+                    {b.totalRecipients}
+                  </span>
+                </button>
+              ))}
+            </div>
+
+            {/* Selected Batch Details Sub-card */}
+            {selectedBatch && (
+              <div className="mt-3 rounded-lg border border-blue-100 bg-blue-50/40 p-3.5 text-xs space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 font-semibold text-blue-950">
+                    <span>{selectedBatch.name || `Batch ${selectedBatch.batchNumber}`} Details</span>
+                    <span className="rounded bg-blue-100 px-2 py-0.5 text-[11px] text-blue-800">
+                      Status: {selectedBatch.status}
+                    </span>
+                  </div>
+                  <span className="text-slate-500 text-[11px]">
+                    Created: {new Date(selectedBatch.createdAt).toLocaleString()}
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-1.5 font-semibold text-slate-700 pt-1">
+                  <FileText className="h-3.5 w-3.5 text-blue-600" />
+                  <span>Batch Message Snapshot:</span>
+                </div>
+                <div className="rounded bg-white p-2.5 border border-blue-100 font-mono text-[11px] text-slate-800 whitespace-pre-wrap">
+                  {selectedBatch.messageText}
+                </div>
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* Message Template Card (Overall campaign template if All Batches selected) */}
+        {campaign && selectedBatchId === 'all' && (
           <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-2xs">
             <div className="flex items-center justify-between pb-2 border-b border-slate-100">
               <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-slate-700">
                 <MessageSquare className="h-4 w-4 text-blue-600" />
-                Message Template
+                Original Campaign Template
               </div>
               {campaign.estimatedCost !== null && campaign.estimatedCost !== undefined && (
                 <div className="text-xs text-slate-600">
-                  Estimated Cost:{' '}
+                  Initial Est. Cost:{' '}
                   <span className="font-bold text-slate-900">
                     {campaign.estimatedCost.toFixed(2)} {currency}
                   </span>
                 </div>
               )}
             </div>
-            <p className="mt-3 text-xs text-slate-800 whitespace-pre-wrap leading-relaxed bg-slate-50 p-3 rounded-lg border border-slate-100 font-sans">
+            <p className="mt-3 text-xs text-slate-800 whitespace-pre-wrap leading-relaxed bg-slate-50 p-3 rounded-lg border border-slate-100 font-mono">
               {campaign.messageTemplate}
             </p>
           </section>
@@ -380,10 +594,11 @@ function CampaignDetailsContent({
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-slate-100 pb-4">
             <div>
               <h2 className="text-base font-semibold text-slate-900">
-                Recipient Outcomes ({recipients.length})
+                Recipient Outcomes ({filteredRecipients.length}
+                {filteredRecipients.length !== recipients.length ? ` of ${recipients.length}` : ''})
               </h2>
               <p className="text-xs text-slate-500">
-                Detailed delivery reconciliation per customer. Phone numbers are masked for privacy.
+                Phone numbers are masked for privacy. Provider message IDs are reconciled upon delivery.
               </p>
             </div>
 
@@ -398,7 +613,7 @@ function CampaignDetailsContent({
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
-                All ({recipients.length})
+                All
               </button>
               <button
                 type="button"
@@ -450,110 +665,119 @@ function CampaignDetailsContent({
             </div>
           </div>
 
-          {/* Recipients Table */}
-          <div className="mt-4 overflow-hidden rounded-lg border border-slate-200">
-            <div className="max-h-96 overflow-y-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="sticky top-0 z-10 border-b border-slate-200 bg-slate-50 text-slate-600">
+          {/* Table */}
+          <div className="mt-4 overflow-x-auto rounded-lg border border-slate-200">
+            <table className="w-full text-left text-xs">
+              <thead className="border-b border-slate-200 bg-slate-50 text-slate-600">
+                <tr>
+                  <th className="px-4 py-3">Customer Name</th>
+                  <th className="px-4 py-3 font-mono">Masked Phone</th>
+                  <th className="px-4 py-3 text-center">Batch</th>
+                  <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3 font-mono">Provider Message ID</th>
+                  <th className="px-4 py-3">Dispatched / Updated</th>
+                  <th className="px-4 py-3">Details / Notes</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 bg-white">
+                {loading ? (
                   <tr>
-                    <th className="px-3 py-2.5">Recipient</th>
-                    <th className="px-3 py-2.5">Masked Phone</th>
-                    <th className="px-3 py-2.5">Status</th>
-                    <th className="px-3 py-2.5">Provider Message ID / Failure Reason</th>
-                    <th className="px-3 py-2.5 text-center">Retries</th>
-                    <th className="px-3 py-2.5 text-right">Timestamp</th>
+                    <td colSpan={7} className="py-8 text-center text-slate-400">
+                      Loading recipients...
+                    </td>
                   </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 bg-white">
-                  {loading ? (
-                    <tr>
-                      <td colSpan={6} className="py-8 text-center text-slate-400">
-                        <RefreshCw className="h-4 w-4 animate-spin mx-auto text-blue-600 mb-1" />
-                        Loading recipients...
-                      </td>
-                    </tr>
-                  ) : filteredRecipients.length === 0 ? (
-                    <tr>
-                      <td colSpan={6} className="py-8 text-center text-slate-400">
-                        No recipient records match the selected filter.
-                      </td>
-                    </tr>
-                  ) : (
-                    filteredRecipients.map((r) => (
-                      <tr key={r.id} className="hover:bg-slate-50/70 transition-colors">
-                        <td className="px-3 py-2.5 font-medium text-slate-900">
+                ) : filteredRecipients.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="py-8 text-center text-slate-400">
+                      No recipients matching current filter.
+                    </td>
+                  </tr>
+                ) : (
+                  filteredRecipients.map((r) => {
+                    const batchForRecipient = batches.find((b) => b.id === r.batchId);
+                    return (
+                      <tr key={r.id} className="hover:bg-slate-50/60 transition-colors">
+                        <td className="px-4 py-3 font-medium text-slate-900">
                           {r.recipientName || 'Customer'}
                         </td>
-                        <td className="px-3 py-2.5 font-mono text-slate-700">
-                          {r.maskedPhone}
+                        <td className="px-4 py-3 font-mono text-slate-600">{r.maskedPhone}</td>
+                        <td className="px-4 py-3 text-center">
+                          <span className="rounded bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-700">
+                            {batchForRecipient?.name || (batchForRecipient?.batchNumber ? `Batch ${batchForRecipient.batchNumber}` : 'Batch 1')}
+                          </span>
                         </td>
-                        <td className="px-3 py-2.5">
+                        <td className="px-4 py-3">
                           {r.status === 'DELIVERED' && (
-                            <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-800 border border-blue-200">
+                            <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2.5 py-0.5 text-[11px] font-semibold text-blue-700 border border-blue-200">
                               <CheckCircle2 className="h-3 w-3 text-blue-600" />
                               Delivered
                             </span>
                           )}
                           {r.status === 'SUBMITTED' && (
-                            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-800 border border-emerald-200">
+                            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-700 border border-emerald-200">
                               <Send className="h-3 w-3 text-emerald-600" />
                               Submitted
                             </span>
                           )}
                           {r.status === 'FAILED' && (
-                            <span className="inline-flex items-center gap-1 rounded-full bg-rose-50 px-2 py-0.5 text-[11px] font-semibold text-rose-800 border border-rose-200">
+                            <span className="inline-flex items-center gap-1 rounded-full bg-rose-50 px-2.5 py-0.5 text-[11px] font-semibold text-rose-800 border border-rose-200">
                               <XCircle className="h-3 w-3 text-rose-600" />
                               Failed
                             </span>
                           )}
-                          {r.status === 'TIMEOUT_UNCONFIRMED' && (
-                            <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800 border border-amber-200">
-                              <Clock className="h-3 w-3 text-amber-600" />
-                              Timeout Unconfirmed
-                            </span>
-                          )}
-                          {r.status === 'PENDING' && (
-                            <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600">
-                              Pending
+                          {(r.status === 'PENDING' || r.status === 'TIMEOUT_UNCONFIRMED') && (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-0.5 text-[11px] font-medium text-slate-600">
+                              <Clock className="h-3 w-3 text-slate-400" />
+                              {r.status === 'TIMEOUT_UNCONFIRMED' ? 'Timeout Unconfirmed' : 'Pending'}
                             </span>
                           )}
                         </td>
-                        <td className="px-3 py-2.5 text-slate-600">
-                          {r.status === 'FAILED' || r.status === 'TIMEOUT_UNCONFIRMED' ? (
-                            <span className="text-rose-700 font-medium">
-                              {r.failureReason || 'Dispatch failed'}
-                            </span>
+                        <td className="px-4 py-3 font-mono text-slate-600 text-[11px]">
+                          {r.providerMessageId ? (
+                            <span>{r.providerMessageId}</span>
                           ) : (
-                            <span className="font-mono text-slate-700 text-[11px]">
-                              {r.providerMessageId || '—'}
-                            </span>
+                            <span className="text-slate-400 italic">None</span>
                           )}
                         </td>
-                        <td className="px-3 py-2.5 text-center text-slate-500 font-mono">
-                          {r.retryCount > 0 ? (
-                            <span className="rounded bg-amber-50 text-amber-800 px-1.5 py-0.5 text-[10px] font-bold">
-                              {r.retryCount}x
-                            </span>
+                        <td className="px-4 py-3 font-mono text-slate-500 text-[11px]">
+                          {r.submittedAt
+                            ? new Date(r.submittedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                            : new Date(r.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </td>
+                        <td className="px-4 py-3 text-[11px] text-slate-500 max-w-xs truncate">
+                          {r.failureReason ? (
+                            <span className="text-rose-700 font-semibold">{r.failureReason}</span>
+                          ) : r.retryCount > 0 ? (
+                            <span className="text-amber-700">Retried ({r.retryCount}x)</span>
                           ) : (
-                            '0'
+                            <span>{r.providerStatus || 'Standard delivery'}</span>
                           )}
-                        </td>
-                        <td className="px-3 py-2.5 text-right font-mono text-[11px] text-slate-400">
-                          {r.deliveredAt
-                            ? new Date(r.deliveredAt).toLocaleTimeString()
-                            : r.submittedAt
-                            ? new Date(r.submittedAt).toLocaleTimeString()
-                            : '—'}
                         </td>
                       </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
           </div>
         </section>
       </main>
+
+      {/* Add Customers Modal */}
+      {campaign && (
+        <AddCustomersModal
+          isOpen={isAddCustomersOpen}
+          onClose={() => setIsAddCustomersOpen(false)}
+          campaignId={campaign.id}
+          campaignName={campaign.name}
+          defaultMessageTemplate={campaign.messageTemplate}
+          existingRecipients={recipients}
+          accessKey={accessKey}
+          tariffPerSegment={tariffPerSegment}
+          currency={currency}
+          onBatchCreated={() => setRefreshTrigger((prev) => prev + 1)}
+        />
+      )}
 
       <AccessKeyModal
         isOpen={isAccessModalOpen}
@@ -566,21 +790,20 @@ function CampaignDetailsContent({
   );
 }
 
-export default function CampaignDetailsPage(props: {
+export default function CampaignDetailsPage({
+  params,
+}: {
   params: Promise<{ id: string }>;
 }) {
   return (
     <Suspense
       fallback={
-        <div className="min-h-screen bg-slate-50 flex items-center justify-center text-slate-500 font-sans text-sm">
-          <div className="flex items-center gap-2">
-            <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-            <span>Loading campaign details...</span>
-          </div>
+        <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+          <div className="text-xs text-slate-500">Loading campaign details...</div>
         </div>
       }
     >
-      <CampaignDetailsContent {...props} />
+      <CampaignDetailsContent params={params} />
     </Suspense>
   );
 }

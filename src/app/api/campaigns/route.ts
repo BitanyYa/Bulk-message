@@ -3,6 +3,7 @@ import { validateRequestAccess } from '@/lib/auth';
 import { prisma, isDatabaseConfigured, formatPrismaErrorMessage } from '@/lib/prisma';
 import { CreateCampaignPayload, CampaignListResponse } from '@/types';
 import { MAX_RECIPIENTS_PER_CAMPAIGN } from '@/lib/parser';
+import { findUnresolvedPlaceholders } from '@/lib/sms';
 import { CampaignStatus, Prisma } from '@prisma/client';
 
 export async function GET(req: NextRequest) {
@@ -26,6 +27,7 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const search = searchParams.get('search')?.trim();
     const status = searchParams.get('status')?.trim() as CampaignStatus | undefined;
+    const archivedParam = searchParams.get('archived')?.trim();
     const startDate = searchParams.get('startDate')?.trim();
     const endDate = searchParams.get('endDate')?.trim();
     const page = Math.max(1, parseInt(searchParams.get('page') || '1', 10));
@@ -33,6 +35,13 @@ export async function GET(req: NextRequest) {
     const skip = (page - 1) * pageSize;
 
     const where: Prisma.CampaignWhereInput = {};
+
+    if (archivedParam === 'true') {
+      where.isArchived = true;
+    } else if (archivedParam === 'false') {
+      where.isArchived = false;
+    }
+    // If archivedParam is 'all' or omitted, we can show active campaigns by default unless specified
 
     if (search) {
       where.name = {
@@ -64,6 +73,18 @@ export async function GET(req: NextRequest) {
         orderBy: { createdAt: 'desc' },
         skip,
         take: pageSize,
+        include: {
+          batches: {
+            select: {
+              id: true,
+              batchNumber: true,
+              status: true,
+              updatedAt: true,
+              createdAt: true,
+            },
+            orderBy: { batchNumber: 'desc' },
+          },
+        },
       }),
       prisma.campaign.count({ where }),
     ]);
@@ -71,13 +92,24 @@ export async function GET(req: NextRequest) {
     const totalPages = Math.ceil(total / pageSize) || 1;
 
     const response: CampaignListResponse = {
-      campaigns: campaigns.map((c) => ({
-        ...c,
-        createdAt: c.createdAt.toISOString(),
-        updatedAt: c.updatedAt.toISOString(),
-        startedAt: c.startedAt ? c.startedAt.toISOString() : null,
-        completedAt: c.completedAt ? c.completedAt.toISOString() : null,
-      })),
+      campaigns: campaigns.map((c) => {
+        const batchCount = c.batches.length > 0 ? c.batches.length : 1;
+        const lastBatch = c.batches[0];
+        const lastBatchActivity = lastBatch
+          ? lastBatch.updatedAt.toISOString()
+          : c.updatedAt.toISOString();
+
+        return {
+          ...c,
+          batches: undefined,
+          batchCount,
+          lastBatchActivity,
+          createdAt: c.createdAt.toISOString(),
+          updatedAt: c.updatedAt.toISOString(),
+          startedAt: c.startedAt ? c.startedAt.toISOString() : null,
+          completedAt: c.completedAt ? c.completedAt.toISOString() : null,
+        };
+      }),
       total,
       page,
       pageSize,
@@ -137,6 +169,17 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Validate placeholders
+  const unresolved = findUnresolvedPlaceholders(messageTemplate);
+  if (unresolved.length > 0) {
+    return NextResponse.json(
+      {
+        error: `Unsupported placeholder(s): ${unresolved.join(', ')}. Only {{name}} is supported.`,
+      },
+      { status: 400 }
+    );
+  }
+
   if (!recipients || !Array.isArray(recipients) || recipients.length === 0) {
     return NextResponse.json(
       { error: 'At least one recipient is required' },
@@ -153,31 +196,63 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Filter intra-payload duplicates
+  const uniqueRecipientsMap = new Map<string, typeof recipients[0]>();
+  for (const r of recipients) {
+    const phone = r.phone.trim();
+    if (!uniqueRecipientsMap.has(phone)) {
+      uniqueRecipientsMap.set(phone, r);
+    }
+  }
+  const uniqueRecipients = Array.from(uniqueRecipientsMap.values());
+
   try {
+    // 1. Create parent Campaign
     const campaign = await prisma.campaign.create({
       data: {
         name: name.trim(),
         originalFilename: originalFilename || null,
         messageTemplate,
         status: 'DRAFT',
-        totalRecipients: recipients.length,
-        validRecipients: recipients.length,
-        pendingCount: recipients.length,
+        isArchived: false,
+        totalRecipients: uniqueRecipients.length,
+        validRecipients: uniqueRecipients.length,
+        pendingCount: uniqueRecipients.length,
         submittedCount: 0,
         deliveredCount: 0,
         failedCount: 0,
         estimatedCost: estimatedCost ?? null,
-        recipients: {
-          createMany: {
-            data: recipients.map((r) => ({
-              recipientName: r.name ? r.name.trim() : null,
-              phone: r.phone.trim(),
-              maskedPhone: r.maskedPhone || r.phone.trim(),
-              status: 'PENDING',
-            })),
-          },
-        },
       },
+    });
+
+    // 2. Create Initial Batch (Batch 1)
+    const batch = await prisma.campaignBatch.create({
+      data: {
+        campaignId: campaign.id,
+        batchNumber: 1,
+        name: 'Batch 1',
+        messageText: messageTemplate,
+        status: 'DRAFT',
+        totalRecipients: uniqueRecipients.length,
+        validRecipients: uniqueRecipients.length,
+        pendingCount: uniqueRecipients.length,
+        submittedCount: 0,
+        deliveredCount: 0,
+        failedCount: 0,
+        estimatedCost: estimatedCost ?? null,
+      },
+    });
+
+    // 3. Create Recipients linked to campaign and batch
+    await prisma.campaignRecipient.createMany({
+      data: uniqueRecipients.map((r) => ({
+        campaignId: campaign.id,
+        batchId: batch.id,
+        recipientName: r.name ? r.name.trim() : null,
+        phone: r.phone.trim(),
+        maskedPhone: r.maskedPhone || r.phone.trim(),
+        status: 'PENDING',
+      })),
     });
 
     return NextResponse.json(
@@ -185,10 +260,17 @@ export async function POST(req: NextRequest) {
         success: true,
         campaign: {
           ...campaign,
+          batchCount: 1,
+          lastBatchActivity: campaign.createdAt.toISOString(),
           createdAt: campaign.createdAt.toISOString(),
           updatedAt: campaign.updatedAt.toISOString(),
           startedAt: campaign.startedAt ? campaign.startedAt.toISOString() : null,
           completedAt: campaign.completedAt ? campaign.completedAt.toISOString() : null,
+        },
+        batch: {
+          ...batch,
+          createdAt: batch.createdAt.toISOString(),
+          updatedAt: batch.updatedAt.toISOString(),
         },
       },
       { status: 201 }

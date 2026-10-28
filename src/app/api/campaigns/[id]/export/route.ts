@@ -22,12 +22,21 @@ export async function GET(
   }
 
   const { id: campaignId } = await context.params;
+  const { searchParams } = new URL(req.url);
+  const batchId = searchParams.get('batchId')?.trim();
 
   try {
     const campaign = await prisma.campaign.findUnique({
       where: { id: campaignId },
       include: {
+        batches: true,
         recipients: {
+          where: batchId ? { batchId } : undefined,
+          include: {
+            batch: {
+              select: { batchNumber: true, name: true },
+            },
+          },
           orderBy: { createdAt: 'asc' },
         },
       },
@@ -43,6 +52,7 @@ export async function GET(
     const headers = [
       'Recipient Name',
       'Masked Phone',
+      'Batch',
       'Status',
       'Provider Message ID',
       'Submitted At',
@@ -54,6 +64,7 @@ export async function GET(
     const rows = campaign.recipients.map((r) => [
       `"${(r.recipientName || 'Customer').replace(/"/g, '""')}"`,
       `"${r.maskedPhone}"`,
+      `"${r.batch?.name || (r.batch?.batchNumber ? `Batch ${r.batch.batchNumber}` : 'Batch 1')}"`,
       `"${r.status}"`,
       `"${r.providerMessageId || ''}"`,
       `"${r.submittedAt ? r.submittedAt.toISOString() : ''}"`,
@@ -65,11 +76,16 @@ export async function GET(
     const csvContent = [headers.join(','), ...rows.map((row) => row.join(','))].join('\n');
     const safeName = campaign.name.replace(/[^a-zA-Z0-9_-]/g, '_').toLowerCase();
 
+    const targetBatch = batchId ? campaign.batches.find((b) => b.id === batchId) : null;
+    const filename = targetBatch
+      ? `campaign_${safeName}_batch_${targetBatch.batchNumber}_results.csv`
+      : `campaign_${safeName}_results.csv`;
+
     return new Response(csvContent, {
       status: 200,
       headers: {
         'Content-Type': 'text/csv; charset=utf-8',
-        'Content-Disposition': `attachment; filename="campaign_${safeName}_results.csv"`,
+        'Content-Disposition': `attachment; filename="${filename}"`,
       },
     });
   } catch (err: unknown) {

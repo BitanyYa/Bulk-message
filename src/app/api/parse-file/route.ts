@@ -7,6 +7,7 @@ export async function POST(req: NextRequest) {
     const formData = await req.formData();
     const file = formData.get('file') as File | null;
     const mappingJson = formData.get('mapping') as string | null;
+    const existingPhonesJson = formData.get('existingPhones') as string | null;
 
     if (!file) {
       return NextResponse.json(
@@ -28,7 +29,19 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const result = await parseCustomerFile(buffer, filename, customMapping);
+    let existingPhones: string[] | undefined;
+    if (existingPhonesJson) {
+      try {
+        existingPhones = JSON.parse(existingPhonesJson);
+      } catch {
+        // ignore invalid existing phones json
+      }
+    }
+
+    const result = await parseCustomerFile(buffer, filename, {
+      customMapping,
+      existingPhones,
+    });
 
     return NextResponse.json(result);
   } catch (err: unknown) {

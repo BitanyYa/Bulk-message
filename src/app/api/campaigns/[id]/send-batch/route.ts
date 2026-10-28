@@ -27,7 +27,7 @@ export async function POST(
 
   const { id: campaignId } = await context.params;
 
-  let body: { recipientIds?: string[] } = {};
+  let body: { recipientIds?: string[]; batchId?: string } = {};
   try {
     body = await req.json();
   } catch {
@@ -54,14 +54,39 @@ export async function POST(
       );
     }
 
+    if (campaign.isArchived) {
+      return NextResponse.json(
+        { error: 'This campaign is closed/archived. Reopen it before sending messages.' },
+        { status: 400 }
+      );
+    }
+
+    let targetBatch = null;
+    if (body.batchId) {
+      targetBatch = await prisma.campaignBatch.findUnique({
+        where: { id: body.batchId },
+      });
+      if (!targetBatch || targetBatch.campaignId !== campaignId) {
+        return NextResponse.json(
+          { error: 'Specified batch not found in this campaign' },
+          { status: 404 }
+        );
+      }
+    }
+
     // Find target recipients
     const whereClause: {
       campaignId: string;
+      batchId?: string;
       id?: { in: string[] };
       status?: 'PENDING';
     } = {
       campaignId,
     };
+
+    if (body.batchId) {
+      whereClause.batchId = body.batchId;
+    }
 
     if (body.recipientIds && body.recipientIds.length > 0) {
       whereClause.id = { in: body.recipientIds };
@@ -96,6 +121,17 @@ export async function POST(
       });
     }
 
+    // Update batch to SENDING if targetBatch is DRAFT
+    if (targetBatch && (targetBatch.status === 'DRAFT' || !targetBatch.startedAt)) {
+      await prisma.campaignBatch.update({
+        where: { id: targetBatch.id },
+        data: {
+          status: 'SENDING',
+          startedAt: targetBatch.startedAt ?? new Date(),
+        },
+      });
+    }
+
     // Optional callback URL
     let callbackUrl = process.env.AFROMESSAGE_CALLBACK_URL;
     if (!callbackUrl && process.env.AFROMESSAGE_WEBHOOK_SECRET) {
@@ -103,6 +139,8 @@ export async function POST(
       const protocol = host.includes('localhost') ? 'http' : 'https';
       callbackUrl = `${protocol}://${host}/api/webhooks/afromessage?secret=${process.env.AFROMESSAGE_WEBHOOK_SECRET}`;
     }
+
+    const templateToUse = targetBatch?.messageText || campaign.messageTemplate;
 
     // Process chunk of 5 concurrent requests
     const CONCURRENCY = 5;
@@ -118,7 +156,7 @@ export async function POST(
 
       const chunkPromises = chunk.map(async (recipient) => {
         const personalizedMsg = personalizeMessage(
-          campaign.messageTemplate,
+          templateToUse,
           recipient.recipientName || ''
         );
 
@@ -182,7 +220,55 @@ export async function POST(
       }
     }
 
-    // Recalculate campaign aggregate counters
+    // Update batch aggregates if targetBatch was specified
+    if (targetBatch) {
+      const [batchCounts, batchRemainingPending] = await Promise.all([
+        prisma.campaignRecipient.groupBy({
+          by: ['status'],
+          where: { batchId: targetBatch.id },
+          _count: { id: true },
+        }),
+        prisma.campaignRecipient.count({
+          where: { batchId: targetBatch.id, status: 'PENDING' },
+        }),
+      ]);
+
+      let bSubmitted = 0;
+      let bDelivered = 0;
+      let bFailed = 0;
+      let bPending = 0;
+
+      for (const group of batchCounts) {
+        if (group.status === 'SUBMITTED') bSubmitted = group._count.id;
+        if (group.status === 'DELIVERED') bDelivered = group._count.id;
+        if (group.status === 'FAILED') bFailed = group._count.id;
+        if (group.status === 'PENDING' || group.status === 'TIMEOUT_UNCONFIRMED') {
+          bPending += group._count.id;
+        }
+      }
+
+      let bFinalStatus: 'SENDING' | 'COMPLETED' | 'PARTIALLY_FAILED' = 'SENDING';
+      let bCompletedAt: Date | null = null;
+
+      if (batchRemainingPending === 0) {
+        bCompletedAt = new Date();
+        bFinalStatus = bFailed > 0 ? 'PARTIALLY_FAILED' : 'COMPLETED';
+      }
+
+      await prisma.campaignBatch.update({
+        where: { id: targetBatch.id },
+        data: {
+          submittedCount: bSubmitted,
+          deliveredCount: bDelivered,
+          failedCount: bFailed,
+          pendingCount: bPending,
+          status: bFinalStatus,
+          completedAt: bCompletedAt,
+        },
+      });
+    }
+
+    // Recalculate parent campaign aggregate counters
     const [counts, remainingPending] = await Promise.all([
       prisma.campaignRecipient.groupBy({
         by: ['status'],

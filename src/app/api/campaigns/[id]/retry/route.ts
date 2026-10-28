@@ -23,6 +23,13 @@ export async function POST(
 
   const { id: campaignId } = await context.params;
 
+  let body: { batchId?: string } = {};
+  try {
+    body = await req.json();
+  } catch {
+    // optional body
+  }
+
   try {
     const campaign = await prisma.campaign.findUnique({
       where: { id: campaignId },
@@ -35,27 +42,34 @@ export async function POST(
       );
     }
 
+    const whereFilter: {
+      campaignId: string;
+      batchId?: string;
+      status: { in: ['FAILED', 'TIMEOUT_UNCONFIRMED'] };
+    } = {
+      campaignId,
+      status: { in: ['FAILED', 'TIMEOUT_UNCONFIRMED'] },
+    };
+
+    if (body.batchId) {
+      whereFilter.batchId = body.batchId;
+    }
+
     // Strictly select ONLY failed or timeout_unconfirmed recipients
     const failedRecipients = await prisma.campaignRecipient.findMany({
-      where: {
-        campaignId,
-        status: { in: ['FAILED', 'TIMEOUT_UNCONFIRMED'] },
-      },
+      where: whereFilter,
     });
 
     if (failedRecipients.length === 0) {
       return NextResponse.json(
-        { error: 'No failed or timed-out messages found to retry in this campaign.' },
+        { error: 'No failed or timed-out messages found to retry in this selection.' },
         { status: 400 }
       );
     }
 
     // Reset their status to PENDING and increment retryCount
     await prisma.campaignRecipient.updateMany({
-      where: {
-        campaignId,
-        status: { in: ['FAILED', 'TIMEOUT_UNCONFIRMED'] },
-      },
+      where: whereFilter,
       data: {
         status: 'PENDING',
         retryCount: { increment: 1 },
@@ -63,6 +77,35 @@ export async function POST(
         providerStatus: 'Queued for retry',
       },
     });
+
+    // Update batch if batchId provided
+    if (body.batchId) {
+      const bCounts = await prisma.campaignRecipient.groupBy({
+        by: ['status'],
+        where: { batchId: body.batchId },
+        _count: { id: true },
+      });
+
+      let bSub = 0, bDel = 0, bFail = 0, bPend = 0;
+      for (const g of bCounts) {
+        if (g.status === 'SUBMITTED') bSub = g._count.id;
+        if (g.status === 'DELIVERED') bDel = g._count.id;
+        if (g.status === 'FAILED') bFail = g._count.id;
+        if (g.status === 'PENDING' || g.status === 'TIMEOUT_UNCONFIRMED') bPend += g._count.id;
+      }
+
+      await prisma.campaignBatch.update({
+        where: { id: body.batchId },
+        data: {
+          status: 'SENDING',
+          completedAt: null,
+          submittedCount: bSub,
+          deliveredCount: bDel,
+          failedCount: bFail,
+          pendingCount: bPend,
+        },
+      });
+    }
 
     // Recalculate campaign counts
     const counts = await prisma.campaignRecipient.groupBy({

@@ -1,7 +1,8 @@
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, Suspense } from 'react';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { Header } from '@/components/Header';
 import { AccessKeyModal } from '@/components/AccessKeyModal';
 import { FileUploadSection } from '@/components/FileUploadSection';
@@ -20,7 +21,7 @@ import { analyzeSmsMessage, findUnresolvedPlaceholders } from '@/lib/sms';
 import { MAX_RECIPIENTS_PER_CAMPAIGN } from '@/lib/parser';
 import { Send, AlertCircle, ArrowLeft, PlusCircle } from 'lucide-react';
 
-export default function NewCampaignPage() {
+function NewCampaignContent() {
   // 1. App Configuration & Access Key
   const [accessKey, setAccessKey] = useState<string>(() => {
     if (typeof window !== 'undefined') {
@@ -94,6 +95,36 @@ export default function NewCampaignPage() {
       active = false;
     };
   }, []);
+
+  const searchParams = useSearchParams();
+  const templateId = searchParams.get('templateId');
+
+  // Load message from template if templateId provided in query params
+  useEffect(() => {
+    if (!templateId) return;
+    let active = true;
+
+    async function loadTemplate() {
+      try {
+        const headers: Record<string, string> = {};
+        if (accessKey) headers['x-app-access-key'] = accessKey;
+        const res = await fetch(`/api/templates/${templateId}`, { headers });
+        if (res.ok && active) {
+          const data = await res.json();
+          if (data.body) {
+            setMessage(data.body);
+          }
+        }
+      } catch {
+        // fallback
+      }
+    }
+
+    loadTemplate();
+    return () => {
+      active = false;
+    };
+  }, [templateId, accessKey]);
 
   const handleSaveAccessKey = (key: string) => {
     setAccessKey(key);
@@ -570,3 +601,18 @@ export default function NewCampaignPage() {
     </div>
   );
 }
+
+export default function NewCampaignPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+          <div className="text-xs text-slate-500">Loading campaign creator...</div>
+        </div>
+      }
+    >
+      <NewCampaignContent />
+    </Suspense>
+  );
+}
+

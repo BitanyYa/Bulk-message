@@ -25,12 +25,25 @@ enum RecipientStatus {
   TIMEOUT_UNCONFIRMED
 }
 
+model MessageTemplate {
+  id         String   @id @default(cuid())
+  name       String
+  body       String   @db.Text
+  isArchived Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([isArchived])
+  @@index([createdAt])
+}
+
 model Campaign {
   id               String         @id @default(cuid())
   name             String
   originalFilename String?
   messageTemplate  String         @db.Text
   status           CampaignStatus @default(DRAFT)
+  isArchived       Boolean        @default(false)
   totalRecipients  Int            @default(0)
   validRecipients  Int            @default(0)
   submittedCount   Int            @default(0)
@@ -45,7 +58,37 @@ model Campaign {
   updatedAt        DateTime       @updatedAt
 
   recipients CampaignRecipient[]
+  batches    CampaignBatch[]
 
+  @@index([status])
+  @@index([isArchived])
+  @@index([createdAt])
+}
+
+model CampaignBatch {
+  id              String         @id @default(cuid())
+  campaignId      String
+  campaign        Campaign       @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  batchNumber     Int            @default(1)
+  name            String?
+  messageText     String         @db.Text
+  status          CampaignStatus @default(DRAFT)
+  totalRecipients Int            @default(0)
+  validRecipients Int            @default(0)
+  submittedCount  Int            @default(0)
+  deliveredCount  Int            @default(0)
+  failedCount     Int            @default(0)
+  pendingCount    Int            @default(0)
+  estimatedCost   Float?
+  actualCost      Float?
+  startedAt       DateTime?
+  completedAt     DateTime?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  recipients CampaignRecipient[]
+
+  @@index([campaignId])
   @@index([status])
   @@index([createdAt])
 }
@@ -54,6 +97,8 @@ model CampaignRecipient {
   id                String          @id @default(cuid())
   campaignId        String
   campaign          Campaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  batchId           String?
+  batch             CampaignBatch?  @relation(fields: [batchId], references: [id], onDelete: SetNull)
   recipientName     String?
   phone             String
   maskedPhone       String
@@ -67,7 +112,9 @@ model CampaignRecipient {
   createdAt         DateTime        @default(now())
   updatedAt         DateTime        @updatedAt
 
+  @@unique([campaignId, phone])
   @@index([campaignId])
+  @@index([batchId])
   @@index([providerMessageId])
   @@index([status])
   @@index([createdAt])

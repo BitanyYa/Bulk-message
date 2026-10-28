@@ -11,6 +11,7 @@ import {
   LayoutDashboard,
   History,
   PlusCircle,
+  FileText,
 } from 'lucide-react';
 
 interface HeaderProps {
@@ -36,6 +37,7 @@ export function Header({
   const isDashboard = pathname === '/';
   const isHistory = pathname.startsWith('/campaigns') && pathname !== '/campaigns/new';
   const isNewCampaign = pathname === '/campaigns/new';
+  const isTemplates = pathname.startsWith('/templates');
 
   return (
     <header className="border-b border-slate-200 bg-white shadow-xs sticky top-0 z-40">
@@ -80,6 +82,18 @@ export function Header({
             >
               <History className="h-3.5 w-3.5" />
               <span>Campaign History</span>
+            </Link>
+
+            <Link
+              href="/templates"
+              className={`flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-semibold transition-colors ${
+                isTemplates
+                  ? 'bg-blue-50 text-blue-700'
+                  : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+              }`}
+            >
+              <FileText className="h-3.5 w-3.5" />
+              <span>Templates</span>
             </Link>
           </nav>
         </div>

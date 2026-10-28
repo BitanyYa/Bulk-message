@@ -106,7 +106,14 @@ export default function CampaignHistoryPage() {
     sessionStorage.setItem('yonas_sms_access_key', key);
   };
 
-  const getStatusBadge = (s: CampaignRecord['status']) => {
+  const getStatusBadge = (s: CampaignRecord['status'], isArchived?: boolean) => {
+    if (isArchived) {
+      return (
+        <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-0.5 text-[11px] font-semibold text-slate-600 border border-slate-300">
+          Closed
+        </span>
+      );
+    }
     switch (s) {
       case 'COMPLETED':
         return (
@@ -269,8 +276,10 @@ export default function CampaignHistoryPage() {
             <table className="w-full text-left text-xs">
               <thead className="border-b border-slate-200 bg-slate-50 text-slate-600">
                 <tr>
-                  <th className="px-4 py-3">Campaign Name</th>
-                  <th className="px-4 py-3">Dispatched Date</th>
+                  <th className="px-4 py-3">Campaign & Template</th>
+                  <th className="px-4 py-3 text-center">Batches</th>
+                  <th className="px-4 py-3">Created</th>
+                  <th className="px-4 py-3">Last Activity</th>
                   <th className="px-4 py-3 text-center">Total</th>
                   <th className="px-4 py-3 text-center">Submitted</th>
                   <th className="px-4 py-3 text-center">Delivered</th>
@@ -283,14 +292,14 @@ export default function CampaignHistoryPage() {
               <tbody className="divide-y divide-slate-100 bg-white">
                 {loading ? (
                   <tr>
-                    <td colSpan={9} className="py-12 text-center text-slate-400">
+                    <td colSpan={11} className="py-12 text-center text-slate-400">
                       <RefreshCw className="h-5 w-5 animate-spin mx-auto text-blue-600 mb-2" />
                       Loading campaigns...
                     </td>
                   </tr>
                 ) : !data || data.campaigns.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="py-14 text-center text-slate-400">
+                    <td colSpan={11} className="py-14 text-center text-slate-400">
                       <Layers className="h-8 w-8 mx-auto text-slate-300 mb-2" />
                       <p className="font-semibold text-slate-700">No campaigns found</p>
                       <p className="text-[11px] text-slate-500 mt-0.5">
@@ -303,16 +312,27 @@ export default function CampaignHistoryPage() {
                 ) : (
                   data.campaigns.map((c) => (
                     <tr key={c.id} className="hover:bg-slate-50/70 transition-colors">
-                      <td className="px-4 py-3.5 font-semibold text-slate-900">
-                        {c.name}
+                      <td className="px-4 py-3.5">
+                        <div className="font-semibold text-slate-900">{c.name}</div>
+                        <div className="text-[11px] text-slate-500 font-mono line-clamp-1 max-w-xs mt-0.5">
+                          {c.messageTemplate}
+                        </div>
                         {c.originalFilename && (
-                          <span className="block text-[11px] font-normal text-slate-400">
-                            {c.originalFilename}
+                          <span className="block text-[10px] text-slate-400 mt-0.5">
+                            File: {c.originalFilename}
                           </span>
                         )}
                       </td>
-                      <td className="px-4 py-3.5 font-mono text-slate-600 text-[11px]">
-                        {new Date(c.createdAt).toLocaleDateString()} {new Date(c.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      <td className="px-4 py-3.5 text-center">
+                        <span className="inline-flex items-center rounded-md bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-700 border border-blue-100">
+                          {c.batchCount ?? 1} {(c.batchCount ?? 1) === 1 ? 'batch' : 'batches'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3.5 font-mono text-slate-600 text-[11px] whitespace-nowrap">
+                        {new Date(c.createdAt).toLocaleDateString()}
+                      </td>
+                      <td className="px-4 py-3.5 font-mono text-slate-600 text-[11px] whitespace-nowrap">
+                        {c.lastBatchActivity ? new Date(c.lastBatchActivity).toLocaleDateString() : new Date(c.updatedAt).toLocaleDateString()}
                       </td>
                       <td className="px-4 py-3.5 text-center font-bold text-slate-800">
                         {c.totalRecipients}
@@ -329,8 +349,10 @@ export default function CampaignHistoryPage() {
                       <td className="px-4 py-3.5 text-center font-medium text-slate-500">
                         {c.pendingCount}
                       </td>
-                      <td className="px-4 py-3.5">{getStatusBadge(c.status)}</td>
-                      <td className="px-4 py-3.5 text-right">
+                      <td className="px-4 py-3.5 whitespace-nowrap">
+                        {getStatusBadge(c.status, c.isArchived)}
+                      </td>
+                      <td className="px-4 py-3.5 text-right whitespace-nowrap">
                         <Link
                           href={`/campaigns/${c.id}`}
                           className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1 font-semibold text-slate-700 hover:bg-slate-50 transition-colors"

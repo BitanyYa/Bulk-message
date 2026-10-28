@@ -18,6 +18,7 @@ import {
   AlertTriangle,
   RefreshCw,
   Layers,
+  FileText,
 } from 'lucide-react';
 
 export default function DashboardPage() {
@@ -172,7 +173,7 @@ export default function DashboardPage() {
             </p>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2.5">
             <button
               type="button"
               onClick={handleManualRefresh}
@@ -182,6 +183,14 @@ export default function DashboardPage() {
               <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
               <span>Refresh</span>
             </button>
+
+            <Link
+              href="/templates"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-white/30 bg-white/10 px-3.5 py-2 text-xs font-semibold text-white hover:bg-white/20 transition-colors"
+            >
+              <FileText className="h-4 w-4" />
+              <span>Templates</span>
+            </Link>
 
             <Link
               href="/campaigns/new"

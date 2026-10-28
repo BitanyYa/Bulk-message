@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateRequestAccess } from '@/lib/auth';
 import { prisma, isDatabaseConfigured, formatPrismaErrorMessage } from '@/lib/prisma';
+import { findUnresolvedPlaceholders } from '@/lib/sms';
+import { UpdateCampaignPayload } from '@/types';
 
 export async function GET(
   req: NextRequest,
@@ -94,7 +96,7 @@ export async function PATCH(
 
   const { id } = await context.params;
 
-  let body: { isArchived?: boolean };
+  let body: UpdateCampaignPayload;
   try {
     body = await req.json();
   } catch {
@@ -104,25 +106,126 @@ export async function PATCH(
     );
   }
 
-  if (body.isArchived === undefined) {
+  if (body.isArchived === undefined && body.messageTemplate === undefined) {
     return NextResponse.json(
-      { error: 'isArchived field is required' },
+      { error: 'At least one field (messageTemplate or isArchived) must be provided' },
       { status: 400 }
     );
   }
 
   try {
+    const existingCampaign = await prisma.campaign.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        name: true,
+        isArchived: true,
+        messageTemplate: true,
+        status: true,
+      },
+    });
+
+    if (!existingCampaign) {
+      return NextResponse.json(
+        { error: 'Campaign not found' },
+        { status: 404 }
+      );
+    }
+
+    const dataToUpdate: { isArchived?: boolean; messageTemplate?: string } = {};
+
+    // 1. Archival / Close / Reopen handling
+    if (body.isArchived !== undefined) {
+      dataToUpdate.isArchived = Boolean(body.isArchived);
+    }
+
+    // 2. Message template editing
+    if (body.messageTemplate !== undefined) {
+      // Determine if campaign will remain or become closed
+      const willBeArchived =
+        dataToUpdate.isArchived !== undefined
+          ? dataToUpdate.isArchived
+          : existingCampaign.isArchived;
+
+      if (willBeArchived) {
+        return NextResponse.json(
+          {
+            error:
+              'Cannot edit message for a closed/archived campaign. Please reopen the campaign first.',
+          },
+          { status: 400 }
+        );
+      }
+
+      if (typeof body.messageTemplate !== 'string') {
+        return NextResponse.json(
+          { error: 'messageTemplate must be a string' },
+          { status: 400 }
+        );
+      }
+
+      const trimmedMessage = body.messageTemplate.trim();
+      if (!trimmedMessage) {
+        return NextResponse.json(
+          { error: 'Campaign message cannot be empty' },
+          { status: 400 }
+        );
+      }
+
+      if (trimmedMessage.length > 1000) {
+        return NextResponse.json(
+          { error: 'Campaign message exceeds the 1,000 character limit' },
+          { status: 400 }
+        );
+      }
+
+      const invalidPlaceholders = findUnresolvedPlaceholders(trimmedMessage);
+      if (invalidPlaceholders.length > 0) {
+        return NextResponse.json(
+          {
+            error: `Unsupported placeholder(s): ${invalidPlaceholders.join(
+              ', '
+            )}. Only {{name}} is supported.`,
+          },
+          { status: 400 }
+        );
+      }
+
+      dataToUpdate.messageTemplate = trimmedMessage;
+    }
+
     const updated = await prisma.campaign.update({
       where: { id },
-      data: { isArchived: Boolean(body.isArchived) },
+      data: dataToUpdate,
+      select: {
+        id: true,
+        name: true,
+        messageTemplate: true,
+        isArchived: true,
+        updatedAt: true,
+      },
     });
+
+    let message = 'Campaign updated successfully';
+    if (body.messageTemplate !== undefined && body.isArchived !== undefined) {
+      message = 'Campaign message and status updated successfully';
+    } else if (body.messageTemplate !== undefined) {
+      message = 'Campaign message updated successfully';
+    } else if (body.isArchived !== undefined) {
+      message = updated.isArchived
+        ? 'Campaign closed/archived successfully'
+        : 'Campaign reopened successfully';
+    }
 
     return NextResponse.json({
       success: true,
+      campaign: {
+        ...updated,
+        updatedAt: updated.updatedAt.toISOString(),
+      },
       isArchived: updated.isArchived,
-      message: updated.isArchived
-        ? 'Campaign closed/archived successfully'
-        : 'Campaign reopened successfully',
+      messageTemplate: updated.messageTemplate,
+      message,
     });
   } catch (err: unknown) {
     const cleanMsg = formatPrismaErrorMessage(err);
@@ -132,3 +235,5 @@ export async function PATCH(
     );
   }
 }
+
+export const PUT = PATCH;

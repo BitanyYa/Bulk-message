@@ -54,8 +54,15 @@ export function AddCustomersModal({
   // Batch details state
   const [batchName, setBatchName] = useState('');
   const [batchMessage, setBatchMessage] = useState(defaultMessageTemplate);
+  const [prevDefaultMessage, setPrevDefaultMessage] = useState(defaultMessageTemplate);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // Sync batchMessage with updated campaign default message template
+  if (defaultMessageTemplate !== prevDefaultMessage) {
+    setPrevDefaultMessage(defaultMessageTemplate);
+    setBatchMessage(defaultMessageTemplate);
+  }
 
   // Live sending progress state if user chooses to send immediately
   const [sendingProgress, setSendingProgress] = useState<{

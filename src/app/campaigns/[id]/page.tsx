@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { Header } from '@/components/Header';
 import { AccessKeyModal } from '@/components/AccessKeyModal';
 import { AddCustomersModal } from '@/components/AddCustomersModal';
+import { EditCampaignMessageModal } from '@/components/EditCampaignMessageModal';
 import { CampaignRecord, CampaignBatchRecord } from '@/types';
 import {
   ArrowLeft,
@@ -24,6 +25,7 @@ import {
   Unlock,
   Layers,
   FileText,
+  Edit3,
 } from 'lucide-react';
 
 function CampaignDetailsContent({
@@ -60,8 +62,9 @@ function CampaignDetailsContent({
   const [retryMessage, setRetryMessage] = useState<string | null>(null);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
 
-  // Add Customers Modal state
+  // Add Customers & Edit Message Modal state
   const [isAddCustomersOpen, setIsAddCustomersOpen] = useState(false);
+  const [isEditMessageOpen, setIsEditMessageOpen] = useState(false);
   const [isArchiving, setIsArchiving] = useState(false);
 
   useEffect(() => {
@@ -335,6 +338,22 @@ function CampaignDetailsContent({
               <span>Add Customers</span>
             </button>
 
+            {/* Edit Message Action */}
+            <button
+              type="button"
+              onClick={() => setIsEditMessageOpen(true)}
+              disabled={campaign?.isArchived}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-2xs hover:bg-slate-50 hover:text-slate-900 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              title={
+                campaign?.isArchived
+                  ? 'Campaign is closed. Reopen to edit message.'
+                  : 'Edit the campaign default message'
+              }
+            >
+              <Edit3 className="h-3.5 w-3.5 text-blue-600" />
+              <span>Edit Message</span>
+            </button>
+
             {/* Close / Reopen Toggle */}
             {campaign && (
               <button
@@ -572,16 +591,28 @@ function CampaignDetailsContent({
             <div className="flex items-center justify-between pb-2 border-b border-slate-100">
               <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-slate-700">
                 <MessageSquare className="h-4 w-4 text-blue-600" />
-                Original Campaign Template
+                Campaign Message Template
               </div>
-              {campaign.estimatedCost !== null && campaign.estimatedCost !== undefined && (
-                <div className="text-xs text-slate-600">
-                  Initial Est. Cost:{' '}
-                  <span className="font-bold text-slate-900">
-                    {campaign.estimatedCost.toFixed(2)} {currency}
-                  </span>
-                </div>
-              )}
+              <div className="flex items-center gap-3">
+                {!campaign.isArchived && (
+                  <button
+                    type="button"
+                    onClick={() => setIsEditMessageOpen(true)}
+                    className="inline-flex items-center gap-1 text-xs font-semibold text-blue-700 hover:text-blue-900 hover:underline"
+                  >
+                    <Edit3 className="h-3 w-3" />
+                    <span>Edit Message</span>
+                  </button>
+                )}
+                {campaign.estimatedCost !== null && campaign.estimatedCost !== undefined && (
+                  <div className="text-xs text-slate-600">
+                    Initial Est. Cost:{' '}
+                    <span className="font-bold text-slate-900">
+                      {campaign.estimatedCost.toFixed(2)} {currency}
+                    </span>
+                  </div>
+                )}
+              </div>
             </div>
             <p className="mt-3 text-xs text-slate-800 whitespace-pre-wrap leading-relaxed bg-slate-50 p-3 rounded-lg border border-slate-100 font-mono">
               {campaign.messageTemplate}
@@ -776,6 +807,24 @@ function CampaignDetailsContent({
           tariffPerSegment={tariffPerSegment}
           currency={currency}
           onBatchCreated={() => setRefreshTrigger((prev) => prev + 1)}
+        />
+      )}
+
+      {campaign && (
+        <EditCampaignMessageModal
+          isOpen={isEditMessageOpen}
+          onClose={() => setIsEditMessageOpen(false)}
+          campaignId={campaign.id}
+          campaignName={campaign.name}
+          currentMessage={campaign.messageTemplate}
+          isArchived={Boolean(campaign.isArchived)}
+          accessKey={accessKey}
+          tariffPerSegment={tariffPerSegment}
+          currency={currency}
+          onMessageSaved={(newMsg) => {
+            setCampaign((prev) => (prev ? { ...prev, messageTemplate: newMsg } : null));
+            setRefreshTrigger((prev) => prev + 1);
+          }}
         />
       )}
 

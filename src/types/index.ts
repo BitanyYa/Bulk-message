@@ -107,6 +107,11 @@ export interface UpdateTemplatePayload {
   isArchived?: boolean;
 }
 
+export interface UpdateCampaignPayload {
+  messageTemplate?: string;
+  isArchived?: boolean;
+}
+
 // ==========================================
 // Persistent Campaign & History Types
 // ==========================================
